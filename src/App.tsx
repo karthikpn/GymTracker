@@ -5,6 +5,7 @@ import React, {
   useCallback,
   useRef,
 } from 'react';
+
 import {
   Trophy,
   Dumbbell,
@@ -16,8 +17,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-const WEB_APP_URL =
-  'https://script.google.com/macros/s/AKfycbxhCIcUzplENcBMRLrYqogofUm8yzT8M-bt-D6s04E4LjC4iaaJamqq565go9EESw9y7w/exec';
+const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyd8NAFteTLbZf_djKSxXsfJu4E0QVg8VFVMFjZ4H-eQZ01dqLHIXa0arS4D0mYJRPuAg/exec';
 
 const TIME_ZONE = 'Asia/Kolkata';
 
@@ -83,7 +83,7 @@ const MEMBER_AVATARS: Record<string, string> = {
   Ronak: '🔥',
 };
 
-// Convert UTC timestamp to Indian calendar date: YYYY-MM-DD.
+// Convert timestamp into Indian calendar date.
 const normalizeDate = (timestamp: string): string => {
   if (!timestamp) return '';
 
@@ -101,24 +101,19 @@ const normalizeDate = (timestamp: string): string => {
   const getPart = (type: string) =>
     parts.find((part) => part.type === type)?.value || '';
 
-  const year = getPart('year');
-  const month = getPart('month');
-  const day = getPart('day');
-
-  return `${year}-${month}-${day}`;
+  return `${getPart('year')}-${getPart('month')}-${getPart('day')}`;
 };
 
-// Get current Indian date.
+// Current date in India.
 const getTodayDate = (): string => {
   return normalizeDate(new Date().toISOString());
 };
 
-// Monday to Sunday week range in Indian calendar.
+// Monday to Sunday week range.
 const getCurrentWeekRange = () => {
   const today = getTodayDate();
   const [year, month, day] = today.split('-').map(Number);
 
-  // Construct date using local calendar components.
   const current = new Date(year, month - 1, day);
 
   const dayOfWeek = current.getDay();
@@ -142,7 +137,6 @@ const getCurrentWeekRange = () => {
   };
 };
 
-// Display date.
 const formatDisplayDate = (date: string) => {
   if (!date) return '';
 
@@ -171,7 +165,8 @@ const calculateMemberStats = (
     (log.muscles || []).forEach((muscle) => {
       trainedMusclesSet.add(muscle);
 
-      muscleBreakdown[muscle] = (muscleBreakdown[muscle] || 0) + 1;
+      muscleBreakdown[muscle] =
+        (muscleBreakdown[muscle] || 0) + 1;
 
       totalHits++;
     });
@@ -193,21 +188,27 @@ export default function App(): React.ReactElement {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+
+  // Reuse the same ID when retrying a submission.
   const pendingRequestIdRef = useRef<string | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'log'>(
-    'leaderboard'
-  );
+  const [activeTab, setActiveTab] = useState<
+    'leaderboard' | 'alltime' | 'log'
+  >('leaderboard');
 
-  const [timeFilter, setTimeFilter] = useState<'week' | 'alltime'>('week');
+  const [timeFilter, setTimeFilter] = useState<
+    'week' | 'alltime'
+  >('week');
 
   const [selectedMemberModal, setSelectedMemberModal] =
     useState<MemberStat | null>(null);
 
   const [formMember, setFormMember] = useState(SQUAD_MEMBERS[0]);
 
-  const [formMuscles, setFormMuscles] = useState<string[]>([]);
+  // Workout date defaults to today's Indian date.
+  const [formDate, setFormDate] = useState(getTodayDate());
 
+  const [formMuscles, setFormMuscles] = useState<string[]>([]);
   const [formNotes, setFormNotes] = useState('');
 
   const [showToast, setShowToast] = useState(false);
@@ -221,7 +222,10 @@ export default function App(): React.ReactElement {
     try {
       const separator = WEB_APP_URL.includes('?') ? '&' : '?';
 
-      const response = await fetch(`${WEB_APP_URL}${separator}t=${Date.now()}`);
+      const response = await fetch(
+        `${WEB_APP_URL}${separator}t=${Date.now()}`,
+        { cache: 'no-store' }
+      );
 
       if (!response.ok) {
         throw new Error(`HTTP error: ${response.status}`);
@@ -233,14 +237,19 @@ export default function App(): React.ReactElement {
         throw new Error('Invalid Google Sheets response');
       }
 
-      // Map actual Google Sheets response.
       const normalizedLogs: LogEntry[] = data.map(
         (item: any, index: number) => ({
           id: index,
-          timestamp: String(item.timestamp ?? item.Timestamp ?? ''),
-          member: String(item.member ?? item.Member ?? '').trim(),
+          timestamp: String(
+            item.timestamp ?? item.Timestamp ?? ''
+          ),
+          member: String(
+            item.member ?? item.Member ?? ''
+          ).trim(),
           notes: String(item.notes ?? item.Notes ?? ''),
-          requestId: String(item.requestId ?? item.RequestId ?? ''),
+          requestId: String(
+            item.requestId ?? item.RequestId ?? ''
+          ),
           muscles: Array.isArray(item.muscles)
             ? item.muscles
             : typeof item.muscles === 'string'
@@ -249,7 +258,8 @@ export default function App(): React.ReactElement {
                 .map((m: string) => m.trim())
                 .filter(Boolean)
             : typeof item.Muscles === 'string'
-            ? item.Muscles.split(',')
+            ? item.Muscles
+                .split(',')
                 .map((m: string) => m.trim())
                 .filter(Boolean)
             : [],
@@ -257,17 +267,6 @@ export default function App(): React.ReactElement {
       );
 
       console.log('Google Sheets data:', normalizedLogs);
-
-      console.log('This week range:', getCurrentWeekRange());
-
-      normalizedLogs.forEach((log) => {
-        console.log({
-          member: log.member,
-          timestamp: log.timestamp,
-          indianDate: normalizeDate(log.timestamp),
-        });
-      });
-
       setLogs(normalizedLogs);
     } catch (error) {
       console.error('Failed to fetch Google Sheets:', error);
@@ -284,7 +283,7 @@ export default function App(): React.ReactElement {
     fetchLogs();
   }, [fetchLogs]);
 
-  // Weekly / All-time filtering.
+  // Weekly / all-time filtering.
   const filteredLogs = useMemo(() => {
     if (timeFilter === 'week') {
       const { start, end } = getCurrentWeekRange();
@@ -302,7 +301,9 @@ export default function App(): React.ReactElement {
   // Weekly member statistics.
   const memberStats = useMemo(() => {
     return SQUAD_MEMBERS.map((member) => {
-      const memberLogs = filteredLogs.filter((log) => log.member === member);
+      const memberLogs = filteredLogs.filter(
+        (log) => log.member === member
+      );
 
       return calculateMemberStats(member, memberLogs);
     });
@@ -311,13 +312,18 @@ export default function App(): React.ReactElement {
   // All-time member statistics.
   const allTimeMemberStats = useMemo(() => {
     return SQUAD_MEMBERS.map((member) => {
-      const memberLogs = logs.filter((log) => log.member === member);
+      const memberLogs = logs.filter(
+        (log) => log.member === member
+      );
 
       return calculateMemberStats(member, memberLogs);
     });
   }, [logs]);
 
-  // Leaderboard sorting.
+  // Leaderboard sorting:
+  // 1. Active days
+  // 2. Muscle coverage
+  // 3. Total muscle hits
   const sortedLeaderboard = useMemo(() => {
     return [...memberStats].sort((a, b) => {
       if (b.distinctDays !== a.distinctDays) {
@@ -332,15 +338,19 @@ export default function App(): React.ReactElement {
     });
   }, [memberStats]);
 
-  // Poll Google Sheets until the submitted request ID appears.
-  // This verifies persistence without trying to read the opaque no-cors POST response.
-  const verifyWorkoutSaved = async (requestId: string): Promise<boolean> => {
+  // Verify that the workout exists in Google Sheets.
+  const verifyWorkoutSaved = async (
+    requestId: string
+  ): Promise<boolean> => {
     for (let attempt = 0; attempt < 12; attempt++) {
       if (attempt > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1000)
+        );
       }
 
       const separator = WEB_APP_URL.includes('?') ? '&' : '?';
+
       const response = await fetch(
         `${WEB_APP_URL}${separator}verify=${encodeURIComponent(
           requestId
@@ -348,32 +358,43 @@ export default function App(): React.ReactElement {
         { cache: 'no-store' }
       );
 
-      if (!response.ok) {
-        continue;
-      }
+      if (!response.ok) continue;
 
       const data = await response.json();
 
       if (!Array.isArray(data)) {
-        throw new Error('Invalid response while verifying the saved workout.');
+        throw new Error(
+          'Invalid response while verifying the saved workout.'
+        );
       }
 
-      if (
-        data.some(
-          (item: any) =>
-            String(item.requestId ?? item.RequestId ?? '') === requestId
-        )
-      ) {
-        return true;
-      }
+      const found = data.some(
+        (item: any) =>
+          String(item.requestId ?? item.RequestId ?? '') ===
+          requestId
+      );
+
+      if (found) return true;
     }
 
     return false;
   };
 
-  // Submit workout and confirm that Google Sheets contains the new record.
-  const handleLogSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+  // Submit workout.
+  const handleLogSubmit = async (
+    e: React.FormEvent<HTMLFormElement>
+  ) => {
     e.preventDefault();
+
+    if (!formDate) {
+      alert('Please select the workout date.');
+      return;
+    }
+
+    if (formDate > getTodayDate()) {
+      alert('Workout date cannot be in the future.');
+      return;
+    }
 
     if (formMuscles.length === 0) {
       alert('Select at least one muscle group!');
@@ -385,23 +406,24 @@ export default function App(): React.ReactElement {
     setSubmitting(true);
     setErrorMessage('');
 
-    // Reuse the same ID if the user retries after a verification timeout.
-    // Apps Script uses it to prevent duplicate rows.
+    // Reuse the same ID if verification times out.
     if (!pendingRequestIdRef.current) {
       pendingRequestIdRef.current = crypto.randomUUID();
     }
+
     const requestId = pendingRequestIdRef.current;
 
     const payload = {
       requestId,
+      date: formDate,
       member: formMember,
       notes: formNotes,
       muscles: formMuscles,
     };
 
     try {
-      // no-cors makes the POST response unreadable. We confirm the write by
-      // polling doGet and looking for this unique requestId.
+      // no-cors makes the POST response unreadable.
+      // We verify the saved record using GET.
       await fetch(WEB_APP_URL, {
         method: 'POST',
         mode: 'no-cors',
@@ -415,21 +437,23 @@ export default function App(): React.ReactElement {
 
       if (!saved) {
         throw new Error(
-          'The workout was sent, but Google Sheets has not confirmed it yet. Refresh the data before submitting it again.'
+          'The workout was sent, but Google Sheets has not confirmed it yet. Refresh the data before submitting again.'
         );
       }
 
       pendingRequestIdRef.current = null;
+
       setFormMuscles([]);
       setFormNotes('');
+      setFormDate(getTodayDate());
 
       setShowToast(true);
       window.setTimeout(() => setShowToast(false), 3000);
 
-      // Refresh from the source of truth; do not add an optimistic record.
+      // Refresh from Google Sheets.
       await fetchLogs();
     } catch (error) {
-      console.error('Submission or verification failed:', error);
+      console.error('Submission failed:', error);
 
       setErrorMessage(
         error instanceof Error
@@ -443,7 +467,9 @@ export default function App(): React.ReactElement {
 
   const toggleMuscle = (name: string) => {
     setFormMuscles((prev) =>
-      prev.includes(name) ? prev.filter((m) => m !== name) : [...prev, name]
+      prev.includes(name)
+        ? prev.filter((m) => m !== name)
+        : [...prev, name]
     );
   };
 
@@ -501,14 +527,18 @@ export default function App(): React.ReactElement {
             disabled={loading}
             className="px-3 py-2 rounded-lg text-sm bg-slate-800 text-emerald-400 hover:bg-slate-700 disabled:opacity-50 flex items-center gap-2"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw
+              className={`w-4 h-4 ${
+                loading ? 'animate-spin' : ''
+              }`}
+            />
             Refresh Data
           </button>
         </div>
       </nav>
 
       <main className="max-w-6xl mx-auto px-4 mt-6">
-        {/* Toast */}
+        {/* Success message */}
         {showToast && (
           <div className="mb-4 p-4 bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 rounded-xl flex items-center gap-3">
             <CheckCircle2 className="w-5 h-5" />
@@ -516,6 +546,7 @@ export default function App(): React.ReactElement {
           </div>
         )}
 
+        {/* Error message */}
         {errorMessage && (
           <div className="mb-4 p-4 bg-red-500/10 border border-red-500/30 text-red-300 rounded-xl">
             {errorMessage}
@@ -735,7 +766,8 @@ export default function App(): React.ReactElement {
 
                   <div className="grid grid-cols-3 gap-2">
                     {MUSCLE_GROUPS.map((mg) => {
-                      const hits = stat.muscleBreakdown[mg.name] || 0;
+                      const hits =
+                        stat.muscleBreakdown[mg.name] || 0;
 
                       return (
                         <div
@@ -750,7 +782,9 @@ export default function App(): React.ReactElement {
 
                           <span
                             className={`font-bold ${
-                              hits > 0 ? 'text-emerald-400' : 'text-slate-600'
+                              hits > 0
+                                ? 'text-emerald-400'
+                                : 'text-slate-600'
                             }`}
                           >
                             {hits}
@@ -773,7 +807,36 @@ export default function App(): React.ReactElement {
               Log Daily Workout
             </h2>
 
-            <form onSubmit={handleLogSubmit} className="space-y-6">
+            <form
+              onSubmit={handleLogSubmit}
+              className="space-y-6"
+            >
+              {/* Workout date */}
+              <div>
+                <label
+                  htmlFor="workout-date"
+                  className="block text-sm font-semibold text-slate-300 mb-2"
+                >
+                  Workout Date
+                </label>
+
+                <input
+                  id="workout-date"
+                  type="date"
+                  value={formDate}
+                  max={getTodayDate()}
+                  onChange={(e) => setFormDate(e.target.value)}
+                  required
+                  disabled={submitting}
+                  className="w-full sm:w-64 bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500 [color-scheme:dark]"
+                />
+
+                <p className="text-xs text-slate-500 mt-2">
+                  Defaults to today. You can select an earlier date to log a past workout.
+                </p>
+              </div>
+
+              {/* Squad member */}
               <div>
                 <label className="block text-sm font-semibold text-slate-300 mb-2">
                   Select Squad Member
@@ -797,6 +860,7 @@ export default function App(): React.ReactElement {
                 </div>
               </div>
 
+              {/* Muscle groups */}
               <div>
                 <label className="block text-sm font-semibold text-slate-300 mb-2">
                   Targeted Muscle Groups ({formMuscles.length}/13)
@@ -828,6 +892,7 @@ export default function App(): React.ReactElement {
                 </div>
               </div>
 
+              {/* Notes */}
               <div>
                 <label className="block text-sm font-semibold text-slate-300 mb-2">
                   Exercises / Notes (Optional)
@@ -866,7 +931,9 @@ export default function App(): React.ReactElement {
             </button>
 
             <div className="flex items-center gap-4">
-              <span className="text-4xl">{selectedMemberModal.avatar}</span>
+              <span className="text-4xl">
+                {selectedMemberModal.avatar}
+              </span>
 
               <div>
                 <h3 className="text-2xl font-bold text-white">
@@ -885,28 +952,30 @@ export default function App(): React.ReactElement {
                 Targeted Muscles
               </h4>
 
-              {Object.keys(selectedMemberModal.muscleBreakdown).length === 0 ? (
+              {Object.keys(
+                selectedMemberModal.muscleBreakdown
+              ).length === 0 ? (
                 <p className="text-slate-500 text-sm bg-slate-950 p-4 rounded-xl text-center">
                   No workouts logged yet for this period.
                 </p>
               ) : (
                 <div className="grid grid-cols-2 gap-2 max-h-60 overflow-y-auto">
-                  {Object.entries(selectedMemberModal.muscleBreakdown).map(
-                    ([muscle, count]) => (
-                      <div
-                        key={muscle}
-                        className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex justify-between items-center"
-                      >
-                        <span className="text-slate-200 text-sm font-medium">
-                          {muscle}
-                        </span>
+                  {Object.entries(
+                    selectedMemberModal.muscleBreakdown
+                  ).map(([muscle, count]) => (
+                    <div
+                      key={muscle}
+                      className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex justify-between items-center"
+                    >
+                      <span className="text-slate-200 text-sm font-medium">
+                        {muscle}
+                      </span>
 
-                        <span className="text-emerald-400 text-xs font-bold">
-                          {count} hit{count > 1 ? 's' : ''}
-                        </span>
-                      </div>
-                    )
-                  )}
+                      <span className="text-emerald-400 text-xs font-bold">
+                        {count} hit{count > 1 ? 's' : ''}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
