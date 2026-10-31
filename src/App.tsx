@@ -189,7 +189,7 @@ const calculateMemberStats = (
   };
 };
 
-export default function App(): JSX.Element {
+export default function App(): React.ReactElement {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
