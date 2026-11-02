@@ -46,6 +46,7 @@ interface MemberStat {
   muscleBreakdown: Record<string, number>;
   totalHits: number;
   totalWorkouts: number;
+  qualifyingWeeks?: number;
   avatar: string;
 }
 
@@ -107,15 +108,21 @@ const MUSCLE_GROUPS: MuscleGroup[] = [
   { id: 'shoulders', name: 'Shoulders', category: 'Upper' },
   { id: 'biceps', name: 'Biceps', category: 'Arms' },
   { id: 'triceps', name: 'Triceps', category: 'Arms' },
-  { id: 'forearms', name: 'Forearms', category: 'Arms' },
-  { id: 'quads', name: 'Quads', category: 'Lower' },
-  { id: 'hamstrings', name: 'Hamstrings', category: 'Lower' },
-  { id: 'glutes', name: 'Glutes', category: 'Lower' },
-  { id: 'calves', name: 'Calves', category: 'Lower' },
+  { id: 'legs', name: 'Legs', category: 'Lower' },
   { id: 'abs', name: 'Abs', category: 'Core' },
-  { id: 'obliques', name: 'Obliques', category: 'Core' },
   { id: 'cardio', name: 'Cardio', category: 'Endurance' },
 ];
+
+// Normalize older workout records so Quads, Hamstrings, Glutes and Calves
+// all count as the single Legs category in the 8-group tracker.
+const normalizeMuscleGroup = (muscle: string): string => {
+  const normalized = muscle.trim().toLowerCase();
+  if (['quads', 'quadriceps', 'hamstrings', 'glutes', 'calves', 'legs', 'leg'].includes(normalized)) {
+    return 'Legs';
+  }
+  const match = MUSCLE_GROUPS.find((group) => group.name.toLowerCase() === normalized);
+  return match?.name || muscle;
+};
 
 const MEMBER_AVATARS: Record<string, string> = {
   Akshaj: '⚡',
@@ -196,6 +203,32 @@ const formatDisplayDate = (date: string) => {
 };
 
 // Calculate member statistics.
+// Count Monday-Sunday calendar weeks with at least 3 workouts.
+const calculateQualifyingWeeks = (memberLogs: LogEntry[]): number => {
+  const workoutsByWeek: Record<string, number> = {};
+
+  memberLogs.forEach((log) => {
+    const date = normalizeDate(log.timestamp);
+    if (!date) return;
+
+    const [year, month, day] = date.split('-').map(Number);
+    const utcDate = new Date(Date.UTC(year, month - 1, day));
+    const dayOfWeek = utcDate.getUTCDay();
+    const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    utcDate.setUTCDate(utcDate.getUTCDate() - daysSinceMonday);
+
+    const monday = [
+      utcDate.getUTCFullYear(),
+      String(utcDate.getUTCMonth() + 1).padStart(2, '0'),
+      String(utcDate.getUTCDate()).padStart(2, '0'),
+    ].join('-');
+
+    workoutsByWeek[monday] = (workoutsByWeek[monday] || 0) + 1;
+  });
+
+  return Object.values(workoutsByWeek).filter((count) => count >= 3).length;
+};
+
 const calculateMemberStats = (
   member: string,
   memberLogs: LogEntry[]
@@ -213,10 +246,9 @@ const calculateMemberStats = (
 
   memberLogs.forEach((log) => {
     (log.muscles || []).forEach((muscle) => {
-      trainedMusclesSet.add(muscle);
-
-      muscleBreakdown[muscle] = (muscleBreakdown[muscle] || 0) + 1;
-
+      const canonicalMuscle = normalizeMuscleGroup(muscle);
+      trainedMusclesSet.add(canonicalMuscle);
+      muscleBreakdown[canonicalMuscle] = (muscleBreakdown[canonicalMuscle] || 0) + 1;
       totalHits++;
     });
   });
@@ -414,20 +446,35 @@ export default function App(): React.ReactElement {
     });
   }, [logs]);
 
-  // Leaderboard sorting.
+  // All-time ranking prioritizes weeks with at least 3 workouts.
   const sortedLeaderboard = useMemo(() => {
-    return [...memberStats].sort((a, b) => {
+    const stats = memberStats.map((stat) => ({
+      ...stat,
+      qualifyingWeeks:
+        timeFilter === 'alltime'
+          ? calculateQualifyingWeeks(logs.filter((log) => log.member === stat.member))
+          : undefined,
+    }));
+
+    return stats.sort((a, b) => {
+      if (timeFilter === 'alltime') {
+        if (b.qualifyingWeeks !== a.qualifyingWeeks) {
+          return (b.qualifyingWeeks || 0) - (a.qualifyingWeeks || 0);
+        }
+        if (b.distinctDays !== a.distinctDays) {
+          return b.distinctDays - a.distinctDays;
+        }
+        return b.totalWorkouts - a.totalWorkouts;
+      }
       if (b.distinctDays !== a.distinctDays) {
         return b.distinctDays - a.distinctDays;
       }
-
       if (b.distinctCoverage !== a.distinctCoverage) {
         return b.distinctCoverage - a.distinctCoverage;
       }
-
       return b.totalHits - a.totalHits;
     });
-  }, [memberStats]);
+  }, [memberStats, logs, timeFilter]);
 
   // Poll Google Sheets until the submitted request ID appears.
   // This verifies persistence without trying to read the opaque no-cors POST response.
@@ -731,8 +778,9 @@ export default function App(): React.ReactElement {
                 </span>
 
                 <p className="text-xs text-slate-500 mt-1">
-                  {formatDisplayDate(weekRange.start)} –{' '}
-                  {formatDisplayDate(weekRange.end)}
+                  {timeFilter === 'week'
+                    ? `${formatDisplayDate(weekRange.start)} – ${formatDisplayDate(weekRange.end)}`
+                    : 'All recorded workout history'}
                 </p>
               </div>
 
@@ -795,9 +843,18 @@ export default function App(): React.ReactElement {
                 </h2>
 
                 <p className="text-slate-400 text-sm mt-2">
-                  {sortedLeaderboard[0].distinctDays} Active Days •{' '}
-                  {sortedLeaderboard[0].distinctCoverage}/13 Muscle Groups
-                  Covered
+                  {timeFilter === 'alltime' ? (
+                    <>
+                      {sortedLeaderboard[0].qualifyingWeeks || 0} Qualifying Weeks •{' '}
+                      {sortedLeaderboard[0].distinctDays} Active Days •{' '}
+                      {sortedLeaderboard[0].totalWorkouts} Workouts
+                    </>
+                  ) : (
+                    <>
+                      {sortedLeaderboard[0].distinctDays} Active Days •{' '}
+                      {sortedLeaderboard[0].distinctCoverage}/8 Muscle Groups Covered
+                    </>
+                  )}
                 </p>
               </div>
             )}
@@ -839,26 +896,29 @@ export default function App(): React.ReactElement {
                     </div>
 
                     <div className="flex items-center gap-6">
-                      <div className="text-right">
-                        <span className="text-xs text-slate-400 block">
-                          Consistency
-                        </span>
-
-                        <span className="font-bold text-emerald-400">
-                          {stat.distinctDays} Days
-                        </span>
-                      </div>
-
-                      <div className="text-right">
-                        <span className="text-xs text-slate-400 block">
-                          Coverage
-                        </span>
-
-                        <span className="font-bold text-cyan-400">
-                          {stat.distinctCoverage}/13
-                        </span>
-                      </div>
-
+                      {timeFilter === 'alltime' ? (
+                        <>
+                          <div className="text-right">
+                            <span className="text-xs text-slate-400 block">3+ Workout Weeks</span>
+                            <span className="font-bold text-emerald-400">{stat.qualifyingWeeks || 0} Weeks</span>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-xs text-slate-400 block">Active Days</span>
+                            <span className="font-bold text-cyan-400">{stat.distinctDays} Days</span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="text-right">
+                            <span className="text-xs text-slate-400 block">Consistency</span>
+                            <span className="font-bold text-emerald-400">{stat.distinctDays} Days</span>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-xs text-slate-400 block">Coverage</span>
+                            <span className="font-bold text-cyan-400">{stat.distinctCoverage}/8</span>
+                          </div>
+                        </>
+                      )}
                       <ChevronRight className="w-5 h-5 text-slate-600 group-hover:text-emerald-400" />
                     </div>
                   </div>
@@ -902,7 +962,7 @@ export default function App(): React.ReactElement {
                     </div>
 
                     <span className="text-xs font-bold text-emerald-400">
-                      {stat.distinctCoverage}/13 Muscles Hit
+                      {stat.distinctCoverage}/8 Muscles Hit
                     </span>
                   </div>
 
@@ -1243,7 +1303,7 @@ export default function App(): React.ReactElement {
 
               <div>
                 <label className="block text-sm font-semibold text-slate-300 mb-2">
-                  Targeted Muscle Groups ({formMuscles.length}/13)
+                  Targeted Muscle Groups ({formMuscles.length}/8)
                 </label>
 
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -1319,7 +1379,7 @@ export default function App(): React.ReactElement {
 
                 <p className="text-slate-400 text-sm">
                   {selectedMemberModal.distinctDays} Active Days •{' '}
-                  {selectedMemberModal.distinctCoverage}/13 Muscle Groups Hit
+                  {selectedMemberModal.distinctCoverage}/8 Muscle Groups Hit
                 </p>
               </div>
             </div>
