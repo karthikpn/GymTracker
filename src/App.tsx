@@ -36,6 +36,7 @@ interface MuscleGroup {
   category: string;
 }
 
+
 interface MemberStat {
   member: string;
   distinctDays: number;
