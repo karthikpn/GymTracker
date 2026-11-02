@@ -64,7 +64,6 @@ const MUSCLE_GROUPS: MuscleGroup[] = [
   { id: 'shoulders', name: 'Shoulders', category: 'Upper' },
   { id: 'biceps', name: 'Biceps', category: 'Arms' },
   { id: 'triceps', name: 'Triceps', category: 'Arms' },
-  { id: 'forearms', name: 'Forearms', category: 'Arms' },
   { id: 'legs', name: 'Legs', category: 'Lower' },
   { id: 'abs', name: 'Abs', category: 'Core' },
   { id: 'cardio', name: 'Cardio', category: 'Endurance' },
@@ -681,7 +680,7 @@ export default function App(): React.ReactElement {
                   ) : (
                     <>
                       {sortedLeaderboard[0].distinctDays} Active Days •{' '}
-                      {sortedLeaderboard[0].distinctCoverage}/13 Muscle Groups
+                      {sortedLeaderboard[0].distinctCoverage}/8 Muscle Groups
                       Covered
                     </>
                   )}
@@ -764,7 +763,7 @@ export default function App(): React.ReactElement {
                               Coverage
                             </span>
                             <span className="font-bold text-cyan-400">
-                              {stat.distinctCoverage}/13
+                              {stat.distinctCoverage}/8
                             </span>
                           </div>
                         </>
@@ -813,7 +812,7 @@ export default function App(): React.ReactElement {
                     </div>
 
                     <span className="text-xs font-bold text-emerald-400">
-                      {stat.distinctCoverage}/13 Muscles Hit
+                      {stat.distinctCoverage}/8 Muscles Hit
                     </span>
                   </div>
 
