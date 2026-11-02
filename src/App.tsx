@@ -14,7 +14,6 @@ import {
   TrendingUp,
   AlertTriangle,
   CheckCircle,
-  ChevronDown,
   Sparkles,
 } from 'lucide-react';
 
