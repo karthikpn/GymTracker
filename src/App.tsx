@@ -15,10 +15,11 @@ import {
   AlertTriangle,
   CheckCircle,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 
 const WEB_APP_URL =
-  'https://script.google.com/macros/s/AKfycbxJzIx6mspsMj8LCDY-p3dsIzSrWkj1l0hzQvbgkkzhlyuciasEACR2LZSo5wklX1W2Tw/exec';
+  'https://script.google.com/macros/s/AKfycbzJvkIup4nBIYMepwMyj4dtHv2Eu5UfTTGTxGnGHu9GI6FLlcMF5fLxySLeXypV1Y_AJA/exec';
 
 const TIME_ZONE = 'Asia/Kolkata';
 
@@ -236,14 +237,14 @@ export default function App(): React.ReactElement {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [reports, setReports] = useState<AiReportRecord[]>([]);
   const [reportsLoading, setReportsLoading] = useState(true);
-  const [reportsError, setReportsError] = useState('');
   const [selectedReportMember, setSelectedReportMember] = useState(SQUAD_MEMBERS[0]);
   const [selectedReportWeek, setSelectedReportWeek] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [deletingRequestId, setDeletingRequestId] = useState<string | null>(null);
   const pendingRequestIdRef = useRef<string | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'reports' | 'log'>(
+  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'reports' | 'log' | 'manage'>(
     'leaderboard'
   );
 
@@ -335,75 +336,30 @@ export default function App(): React.ReactElement {
     fetchLogs();
   }, [fetchLogs]);
 
-  // Normalize Apps Script responses. Supports camelCase objects, sheet-header
-  // keys, and Report JSON returned either as an object or a JSON string.
+  // Fetch AI reports separately so report failures do not affect workout data.
   const fetchReports = useCallback(async () => {
     setReportsLoading(true);
-    setReportsError('');
 
     try {
       const separator = WEB_APP_URL.includes('?') ? '&' : '?';
-      const url = `${WEB_APP_URL}${separator}action=reports&t=${Date.now()}`;
-      const response = await fetch(url, { cache: 'no-store' });
-      const responseText = await response.text();
+      const response = await fetch(
+        `${WEB_APP_URL}${separator}action=reports&t=${Date.now()}`,
+        { cache: 'no-store' }
+      );
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${responseText.slice(0, 300)}`);
-      }
+      if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
 
-      let payload: any;
-      try {
-        payload = JSON.parse(responseText);
-      } catch {
-        throw new Error(`Reports endpoint did not return JSON: ${responseText.slice(0, 300)}`);
-      }
+      const data = await response.json();
+      if (!Array.isArray(data)) throw new Error('Invalid AI reports response');
 
-      const rows = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload?.reports)
-          ? payload.reports
-          : Array.isArray(payload?.data)
-            ? payload.data
-            : null;
-
-      if (!rows) {
-        throw new Error(`Unexpected reports response shape: ${JSON.stringify(payload).slice(0, 300)}`);
-      }
-
-      const read = (item: any, camel: string, sheetHeader: string, alternate?: string) =>
-        item?.[camel] ?? item?.[sheetHeader] ?? (alternate ? item?.[alternate] : undefined);
-
-      const parseReport = (item: any): AiReport | null => {
-        const raw = read(item, 'report', 'Report JSON', 'reportJson');
-        if (raw && typeof raw === 'object') return raw as AiReport;
-        if (typeof raw === 'string' && raw.trim()) {
-          try {
-            return JSON.parse(raw) as AiReport;
-          } catch (error) {
-            console.warn('Could not parse report JSON for', item?.member ?? item?.Member, error);
-          }
-        }
-        return null;
-      };
-
-      const normalizeWeek = (value: unknown) => {
-        const text = String(value ?? '').trim();
-        // Apps Script may serialize a Sheets date as yyyy-MM-ddTHH:mm:ss.
-        return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : text;
-      };
-
-      const normalized: AiReportRecord[] = rows.map((item: any) => ({
-        weekStart: normalizeWeek(read(item, 'weekStart', 'Week Start')),
-        weekEnd: normalizeWeek(read(item, 'weekEnd', 'Week End')),
-        member: String(read(item, 'member', 'Member') ?? '').trim(),
-        report: parseReport(item),
-        generatedAt: String(read(item, 'generatedAt', 'Generated At') ?? ''),
-        status: String(read(item, 'status', 'Status') ?? '').trim().toUpperCase(),
-      })).filter((item: AiReportRecord) => item.member && item.weekStart);
-
-      console.log('AI reports endpoint:', url);
-      console.log('AI reports raw payload:', payload);
-      console.log('AI reports normalized:', normalized);
+      const normalized: AiReportRecord[] = data.map((item: any) => ({
+        weekStart: String(item.weekStart ?? ''),
+        weekEnd: String(item.weekEnd ?? ''),
+        member: String(item.member ?? '').trim(),
+        report: item.report && typeof item.report === 'object' ? item.report : null,
+        generatedAt: String(item.generatedAt ?? ''),
+        status: String(item.status ?? '').toUpperCase(),
+      }));
 
       setReports(normalized);
       setSelectedReportWeek((current) => {
@@ -416,8 +372,6 @@ export default function App(): React.ReactElement {
       });
     } catch (error) {
       console.error('Failed to fetch AI reports:', error);
-      setReportsError(error instanceof Error ? error.message : 'Unknown error loading AI reports');
-      setReports([]);
     } finally {
       setReportsLoading(false);
     }
@@ -595,6 +549,58 @@ export default function App(): React.ReactElement {
     );
   };
 
+  // Delete a workout by its stable Request ID, then verify that it is gone.
+  const handleDeleteWorkout = async (log: LogEntry) => {
+    if (!log.requestId) {
+      alert('This workout has no Request ID and cannot be safely deleted.');
+      return;
+    }
+
+    const date = formatDisplayDate(normalizeDate(log.timestamp));
+    const confirmed = window.confirm(
+      `Delete this workout?\n\nMember: ${log.member}\nDate: ${date}\nMuscles: ${log.muscles.join(', ')}\n\nThis action cannot be undone.`
+    );
+    if (!confirmed || deletingRequestId) return;
+
+    setDeletingRequestId(log.requestId);
+    setErrorMessage('');
+
+    try {
+      await fetch(WEB_APP_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'deleteWorkout', requestId: log.requestId }),
+      });
+
+      let deleted = false;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+        const separator = WEB_APP_URL.includes('?') ? '&' : '?';
+        const response = await fetch(
+          `${WEB_APP_URL}${separator}action=verifyDeleted&requestId=${encodeURIComponent(log.requestId)}&t=${Date.now()}`,
+          { cache: 'no-store' }
+        );
+        if (!response.ok) continue;
+        const result = await response.json();
+        if (result.deleted === true) {
+          deleted = true;
+          break;
+        }
+      }
+
+      if (!deleted) throw new Error('Google Sheets has not confirmed the deletion. Please refresh and check before retrying.');
+
+      await fetchLogs();
+      alert('Workout deleted successfully.');
+    } catch (error) {
+      console.error('Workout deletion failed:', error);
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to delete workout.');
+    } finally {
+      setDeletingRequestId(null);
+    }
+  };
+
   const availableReportWeeks = useMemo(() => {
     return Array.from(
       new Set(reports.map((item) => item.weekStart).filter(Boolean))
@@ -660,6 +666,18 @@ export default function App(): React.ReactElement {
           >
             <BrainCircuit className="w-4 h-4" />
             AI Reports
+          </button>
+
+          <button
+            onClick={() => setActiveTab('manage')}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 ${
+              activeTab === 'manage'
+                ? 'bg-emerald-500 text-slate-950'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            <Trash2 className="w-4 h-4" />
+            Manage Workouts
           </button>
 
           <button
@@ -987,12 +1005,6 @@ export default function App(): React.ReactElement {
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-10 text-center text-slate-400">
                 Loading AI reports...
               </div>
-            ) : reportsError ? (
-              <div className="bg-red-950/30 border border-red-500/30 rounded-2xl p-6">
-                <h3 className="font-bold text-red-300">Could not load AI reports</h3>
-                <p className="text-sm text-slate-300 mt-2 break-words">{reportsError}</p>
-                <button onClick={fetchReports} className="mt-4 px-4 py-2 rounded-lg bg-slate-800 text-white text-sm">Try again</button>
-              </div>
             ) : availableReportWeeks.length === 0 ? (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-10 text-center">
                 <BrainCircuit className="w-10 h-10 mx-auto mb-3 text-slate-600" />
@@ -1129,6 +1141,50 @@ export default function App(): React.ReactElement {
               </>
             )}
           </div>
+        )}
+
+        {/* MANAGE WORKOUTS */}
+        {activeTab === 'manage' && (
+          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+              <div>
+                <h2 className="text-xl font-bold text-white">Manage Workouts</h2>
+                <p className="text-sm text-slate-400 mt-1">Review and delete any squad member's workout entry.</p>
+              </div>
+              <span className="text-xs text-slate-500">{logs.length} total entries</span>
+            </div>
+
+            {loading ? (
+              <p className="text-center text-slate-400 py-8">Loading workouts...</p>
+            ) : logs.length === 0 ? (
+              <p className="text-center text-slate-500 py-8">No workout entries found.</p>
+            ) : (
+              <div className="space-y-3">
+                {[...logs].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((log, index) => (
+                  <div key={log.requestId || `${log.timestamp}-${log.member}-${index}`} className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-white">{MEMBER_AVATARS[log.member] || '🏋️'} {log.member}</span>
+                        <span className="text-xs text-slate-500">{formatDisplayDate(normalizeDate(log.timestamp))}</span>
+                      </div>
+                      <p className="text-sm text-emerald-300 mt-1">{log.muscles.join(' · ') || 'No muscle groups'}</p>
+                      {log.notes && <p className="text-sm text-slate-400 mt-1 break-words">{log.notes}</p>}
+                      {!log.requestId && <p className="text-xs text-amber-400 mt-1">Missing Request ID — cannot safely delete this entry.</p>}
+                    </div>
+                    <button
+                      onClick={() => handleDeleteWorkout(log)}
+                      disabled={!log.requestId || deletingRequestId !== null}
+                      className="shrink-0 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Delete workout"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      {deletingRequestId === log.requestId ? 'Deleting...' : 'Delete'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         )}
 
         {/* LOG WORKOUT */}
