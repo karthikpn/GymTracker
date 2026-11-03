@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   PlusCircle,
   ChevronRight,
+  ChevronDown,
   X,
   User,
   RefreshCw,
@@ -19,7 +20,7 @@ import {
 } from 'lucide-react';
 
 const WEB_APP_URL =
-  'https://script.google.com/macros/s/AKfycbzJvkIup4nBIYMepwMyj4dtHv2Eu5UfTTGTxGnGHu9GI6FLlcMF5fLxySLeXypV1Y_AJA/exec';
+  'https://script.google.com/macros/s/AKfycbyfekYPyNZ9bJeg3FLn00GIaK_9PsFAT4okSEzu38hjHc8KvsQ5I9xysCZW8xXg4KWy/exec';
 
 const TIME_ZONE = 'Asia/Kolkata';
 
@@ -200,6 +201,53 @@ const formatDisplayDate = (date: string) => {
   const [year, month, day] = date.split('-');
 
   return `${day}/${month}/${year}`;
+};
+
+// Human-friendly label for AI report week selectors.
+const formatReportWeekLabel = (start: string, end: string) => {
+  const parseDate = (value: string): Date | null => {
+    if (!value || typeof value !== 'string') return null;
+
+    // Prefer the date portion of ISO values to avoid timezone shifting.
+    const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+      const [, year, month, day] = match;
+      const date = new Date(Number(year), Number(month) - 1, Number(day), 12);
+      // Reject impossible dates such as 2026-02-31.
+      if (
+        date.getFullYear() === Number(year) &&
+        date.getMonth() === Number(month) - 1 &&
+        date.getDate() === Number(day)
+      ) return date;
+      return null;
+    }
+
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const startDate = parseDate(start);
+  if (!startDate) return 'Select a reporting week';
+
+  const endDate = parseDate(end);
+  const shortFormat = new Intl.DateTimeFormat('en-IN', {
+    day: 'numeric',
+    month: 'short',
+  });
+  const fullFormat = new Intl.DateTimeFormat('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+
+  if (!endDate) return fullFormat.format(startDate);
+  if (startDate.getFullYear() !== endDate.getFullYear()) {
+    return `${fullFormat.format(startDate)} – ${fullFormat.format(endDate)}`;
+  }
+  if (startDate.getMonth() === endDate.getMonth()) {
+    return `${startDate.getDate()} – ${fullFormat.format(endDate)}`;
+  }
+  return `${shortFormat.format(startDate)} – ${fullFormat.format(endDate)}`;
 };
 
 // Calculate member statistics.
@@ -1027,7 +1075,7 @@ export default function App(): React.ReactElement {
         {/* AI WEEKLY REPORTS */}
         {activeTab === 'reports' && (
           <div className="space-y-6">
-            <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+            <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5">
               <div>
                 <div className="flex items-center gap-2 text-emerald-400 mb-2">
                   <Sparkles className="w-5 h-5" />
@@ -1036,27 +1084,61 @@ export default function App(): React.ReactElement {
                 <h2 className="text-2xl md:text-3xl font-extrabold text-white">Squad Performance Reports</h2>
                 <p className="text-slate-400 text-sm mt-2">Training consistency, goal alignment, trends and next-week actions.</p>
               </div>
-              <div className="flex items-center gap-2">
-                <CalendarDays className="w-4 h-4 text-slate-400" />
-                <select
-                  value={selectedReportWeek}
-                  onChange={(e) => setSelectedReportWeek(e.target.value)}
-                  disabled={availableReportWeeks.length === 0}
-                  className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
-                >
-                  {availableReportWeeks.length === 0 && <option value="">No reports yet</option>}
-                  {availableReportWeeks.map((week) => {
-                    const weekEnd = reports.find((r) => r.weekStart === week)?.weekEnd || '';
-                    return <option key={week} value={week}>{formatDisplayDate(week)}{weekEnd ? ` – ${formatDisplayDate(weekEnd)}` : ''}</option>;
-                  })}
-                </select>
+
+              <div className="flex items-stretch gap-2 w-full lg:w-auto">
+                <div className="min-w-0 flex-1 lg:w-[350px] rounded-2xl border border-slate-700/80 bg-slate-900 p-3 shadow-lg shadow-black/10">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
+                        <CalendarDays className="w-4 h-4" />
+                      </span>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Reporting week</p>
+                        <p className="text-sm font-semibold text-white">
+                          {formatReportWeekLabel(
+                            selectedReportWeek,
+                            selectedWeekReports[0]?.weekEnd || ''
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                    {availableReportWeeks.length > 0 && selectedReportWeek === availableReportWeeks[0] && (
+                      <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
+                        Latest
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="relative">
+                    <select
+                      aria-label="Choose AI report week"
+                      value={selectedReportWeek}
+                      onChange={(e) => setSelectedReportWeek(e.target.value)}
+                      disabled={availableReportWeeks.length === 0}
+                      className="w-full appearance-none rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 pr-10 text-sm font-medium text-slate-200 outline-none transition hover:border-slate-600 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-50 [color-scheme:dark]"
+                    >
+                      {availableReportWeeks.length === 0 && <option value="">No reports yet</option>}
+                      {availableReportWeeks.map((week) => {
+                        const weekEnd = reports.find((r) => r.weekStart === week)?.weekEnd || '';
+                        return (
+                          <option key={week} value={week}>
+                            {formatReportWeekLabel(week, weekEnd)}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  </div>
+                </div>
+
                 <button
                   onClick={fetchReports}
                   disabled={reportsLoading}
-                  className="p-2 rounded-xl bg-slate-800 text-emerald-400 hover:bg-slate-700 disabled:opacity-50"
+                  className="self-stretch rounded-2xl border border-slate-700 bg-slate-900 px-4 text-emerald-400 transition hover:border-emerald-500/50 hover:bg-slate-800 disabled:opacity-50"
                   title="Refresh AI reports"
+                  aria-label="Refresh AI reports"
                 >
-                  <RefreshCw className={`w-4 h-4 ${reportsLoading ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`h-5 w-5 ${reportsLoading ? 'animate-spin' : ''}`} />
                 </button>
               </div>
             </div>
@@ -1084,7 +1166,7 @@ export default function App(): React.ReactElement {
                   </div>
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 col-span-2">
                     <span className="text-xs text-slate-400">Report period</span>
-                    <div className="text-lg font-bold text-white mt-1">{formatDisplayDate(selectedReportWeek)} – {formatDisplayDate(selectedWeekReports[0]?.weekEnd || '')}</div>
+                    <div className="text-lg font-bold text-white mt-1">{formatReportWeekLabel(selectedReportWeek, selectedWeekReports[0]?.weekEnd || '')}</div>
                   </div>
                 </div>
 
