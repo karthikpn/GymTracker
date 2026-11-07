@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 
 const WEB_APP_URL =
-  'https://script.google.com/macros/s/AKfycbyfekYPyNZ9bJeg3FLn00GIaK_9PsFAT4okSEzu38hjHc8KvsQ5I9xysCZW8xXg4KWy/exec';
+  'https://script.google.com/macros/s/AKfycby5i3lqiW92qrC0Xm1IF_DQANExyxUMZ7ZBrpCTyl_NeQvkUrslpKHIzPp8AelfTPFRTg/exec';
 
 const TIME_ZONE = 'Asia/Kolkata';
 
@@ -83,6 +83,26 @@ interface AiReport {
   nextWeekFocus?: string[];
   closingMessage?: string;
 }
+
+interface MemberGoal {
+  member: string;
+  primaryGoal: string;
+  focusAreas: string;
+  goalDescription: string;
+}
+
+const GOAL_FIELD_LIMITS = {
+  primaryGoal: 120,
+  focusAreas: 200,
+  goalDescription: 1000,
+};
+
+const emptyGoal = (member: string): MemberGoal => ({
+  member,
+  primaryGoal: '',
+  focusAreas: '',
+  goalDescription: '',
+});
 
 interface AiReportRecord {
   weekStart: string;
@@ -324,7 +344,15 @@ export default function App(): React.ReactElement {
   const [deletingRequestId, setDeletingRequestId] = useState<string | null>(null);
   const pendingRequestIdRef = useRef<string | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'reports' | 'log' | 'manage'>(
+  const [goals, setGoals] = useState<MemberGoal[]>([]);
+  const [goalsLoading, setGoalsLoading] = useState(true);
+  const [goalMember, setGoalMember] = useState(SQUAD_MEMBERS[0]);
+  // Unsaved edits for the selected member; null means "show what's saved".
+  const [goalDraft, setGoalDraft] = useState<MemberGoal | null>(null);
+  const [savingGoal, setSavingGoal] = useState(false);
+  const [goalMessage, setGoalMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'reports' | 'goals' | 'log' | 'manage'>(
     'leaderboard'
   );
 
@@ -460,6 +488,118 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     fetchReports();
   }, [fetchReports]);
+
+  // Fetch member goals from the "Member Goals" tab.
+  const fetchGoals = useCallback(async (): Promise<MemberGoal[]> => {
+    setGoalsLoading(true);
+
+    try {
+      const separator = WEB_APP_URL.includes('?') ? '&' : '?';
+      const response = await fetch(
+        `${WEB_APP_URL}${separator}action=goals&t=${Date.now()}`,
+        { cache: 'no-store' }
+      );
+
+      if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+
+      const data = await response.json();
+      if (!Array.isArray(data)) throw new Error('Invalid goals response');
+
+      const normalized: MemberGoal[] = data.map((item: any) => ({
+        member: String(item.member ?? '').trim(),
+        primaryGoal: String(item.primaryGoal ?? ''),
+        focusAreas: String(item.focusAreas ?? ''),
+        goalDescription: String(item.goalDescription ?? ''),
+      }));
+
+      setGoals(normalized);
+      return normalized;
+    } catch (error) {
+      console.error('Failed to fetch member goals:', error);
+      return [];
+    } finally {
+      setGoalsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchGoals();
+  }, [fetchGoals]);
+
+  const savedGoalForMember = goals.find((goal) => goal.member === goalMember);
+  const goalForm: MemberGoal = goalDraft ?? savedGoalForMember ?? emptyGoal(goalMember);
+  const setGoalForm = (update: (current: MemberGoal) => MemberGoal) =>
+    setGoalDraft(update(goalForm));
+
+  const selectGoalMember = (member: string) => {
+    if (member === goalMember) return;
+    if (goalFormDirty && !window.confirm('Discard unsaved goal changes?')) return;
+    setGoalMember(member);
+    setGoalDraft(null);
+    setGoalMessage(null);
+  };
+  const goalFormDirty =
+    (savedGoalForMember?.primaryGoal ?? '') !== goalForm.primaryGoal ||
+    (savedGoalForMember?.focusAreas ?? '') !== goalForm.focusAreas ||
+    (savedGoalForMember?.goalDescription ?? '') !== goalForm.goalDescription;
+
+  // Save a goal, then poll the sheet until the new values are visible.
+  const handleGoalSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (savingGoal) return;
+
+    const payload = {
+      action: 'updateGoal',
+      member: goalMember,
+      primaryGoal: goalForm.primaryGoal.trim(),
+      focusAreas: goalForm.focusAreas.trim(),
+      goalDescription: goalForm.goalDescription.trim(),
+    };
+
+    if (!payload.primaryGoal) {
+      setGoalMessage({ type: 'error', text: 'Primary goal is required.' });
+      return;
+    }
+
+    setSavingGoal(true);
+    setGoalMessage(null);
+
+    try {
+      await fetch(WEB_APP_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload),
+      });
+
+      let confirmed = false;
+      for (let attempt = 0; attempt < 12 && !confirmed; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+        const latest = await fetchGoals();
+        const saved = latest.find((goal) => goal.member === payload.member);
+        confirmed =
+          !!saved &&
+          saved.primaryGoal.trim() === payload.primaryGoal &&
+          saved.focusAreas.trim() === payload.focusAreas &&
+          saved.goalDescription.trim() === payload.goalDescription;
+      }
+
+      if (!confirmed) {
+        throw new Error('The goal was sent, but Google Sheets has not confirmed it yet. Refresh and check before saving again.');
+      }
+
+      setGoalDraft(null);
+      setGoalMessage({ type: 'success', text: `${payload.member}'s goal saved to Google Sheets.` });
+    } catch (error) {
+      console.error('Goal save failed:', error);
+      setGoalMessage({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'Unable to save goal.',
+      });
+    } finally {
+      setSavingGoal(false);
+    }
+  };
 
   // Weekly / All-time filtering.
   const filteredLogs = useMemo(() => {
@@ -764,6 +904,18 @@ export default function App(): React.ReactElement {
           </button>
 
           <button
+            onClick={() => setActiveTab('goals')}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 ${
+              activeTab === 'goals'
+                ? 'bg-emerald-500 text-slate-950'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            <Target className="w-4 h-4" />
+            Goals
+          </button>
+
+          <button
             onClick={() => setActiveTab('manage')}
             className={`px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 ${
               activeTab === 'manage'
@@ -791,11 +943,12 @@ export default function App(): React.ReactElement {
             onClick={() => {
               fetchLogs();
               fetchReports();
+              fetchGoals();
             }}
-            disabled={loading || reportsLoading}
+            disabled={loading || reportsLoading || goalsLoading}
             className="px-3 py-2 rounded-lg text-sm bg-slate-800 text-emerald-400 hover:bg-slate-700 disabled:opacity-50 flex items-center gap-2"
           >
-            <RefreshCw className={`w-4 h-4 ${loading || reportsLoading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${loading || reportsLoading || goalsLoading ? 'animate-spin' : ''}`} />
             Refresh Data
           </button>
         </div>
@@ -1282,6 +1435,198 @@ export default function App(): React.ReactElement {
                 )}
               </>
             )}
+          </div>
+        )}
+
+        {/* MEMBER GOALS */}
+        {activeTab === 'goals' && (
+          <div className="space-y-6">
+            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+                <div>
+                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                    <Target className="w-6 h-6 text-emerald-400" />
+                    Member Goals
+                  </h2>
+                  <p className="text-sm text-slate-400 mt-1">
+                    Saved to the Member Goals tab in Google Sheets. AI reports use these to score goal alignment.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-2 mb-6">
+                {SQUAD_MEMBERS.map((member) => {
+                  const hasGoal = !!goals.find((g) => g.member === member)?.primaryGoal;
+                  return (
+                    <button
+                      key={member}
+                      type="button"
+                      onClick={() => selectGoalMember(member)}
+                      disabled={savingGoal}
+                      className={`p-3 rounded-xl font-bold text-sm text-center border transition disabled:opacity-60 ${
+                        goalMember === member
+                          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                      }`}
+                    >
+                      {MEMBER_AVATARS[member]} {member}
+                      <span className={`block text-[10px] font-semibold mt-1 ${hasGoal ? 'text-emerald-500' : 'text-slate-600'}`}>
+                        {hasGoal ? 'Goal set' : 'No goal'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {goalsLoading && goals.length === 0 ? (
+                <p className="text-center text-slate-400 py-8">Loading goals...</p>
+              ) : (
+                <form onSubmit={handleGoalSubmit} className="space-y-5">
+                  <div>
+                    <label htmlFor="goal-primary" className="block text-sm font-semibold text-slate-300 mb-2">
+                      Primary Goal
+                    </label>
+                    <input
+                      id="goal-primary"
+                      type="text"
+                      value={goalForm.primaryGoal}
+                      maxLength={GOAL_FIELD_LIMITS.primaryGoal}
+                      onChange={(e) => setGoalForm((f) => ({ ...f, primaryGoal: e.target.value }))}
+                      disabled={savingGoal}
+                      placeholder="e.g. Build muscle, Lose fat, Improve endurance"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="goal-focus" className="block text-sm font-semibold text-slate-300 mb-2">
+                      Focus Areas
+                    </label>
+                    <input
+                      id="goal-focus"
+                      type="text"
+                      value={goalForm.focusAreas}
+                      maxLength={GOAL_FIELD_LIMITS.focusAreas}
+                      onChange={(e) => setGoalForm((f) => ({ ...f, focusAreas: e.target.value }))}
+                      disabled={savingGoal}
+                      placeholder="e.g. Chest, Back, Cardio"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500"
+                    />
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {MUSCLE_GROUPS.map((mg) => {
+                        const current = goalForm.focusAreas.split(',').map((x) => x.trim()).filter(Boolean);
+                        const selected = current.some((x) => x.toLowerCase() === mg.name.toLowerCase());
+                        return (
+                          <button
+                            key={mg.id}
+                            type="button"
+                            disabled={savingGoal}
+                            onClick={() =>
+                              setGoalForm((f) => {
+                                const list = f.focusAreas.split(',').map((x) => x.trim()).filter(Boolean);
+                                const next = selected
+                                  ? list.filter((x) => x.toLowerCase() !== mg.name.toLowerCase())
+                                  : [...list, mg.name];
+                                return { ...f, focusAreas: next.join(', ') };
+                              })
+                            }
+                            className={`px-3 py-1 rounded-full text-xs font-semibold border transition ${
+                              selected
+                                ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                                : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                            }`}
+                          >
+                            {mg.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="goal-description" className="block text-sm font-semibold text-slate-300 mb-2">
+                      Goal Description
+                    </label>
+                    <textarea
+                      id="goal-description"
+                      value={goalForm.goalDescription}
+                      maxLength={GOAL_FIELD_LIMITS.goalDescription}
+                      onChange={(e) => setGoalForm((f) => ({ ...f, goalDescription: e.target.value }))}
+                      disabled={savingGoal}
+                      rows={4}
+                      placeholder="What does success look like? Any targets, timelines or constraints."
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500"
+                    />
+                    <p className="text-xs text-slate-500 mt-1 text-right">
+                      {goalForm.goalDescription.length}/{GOAL_FIELD_LIMITS.goalDescription}
+                    </p>
+                  </div>
+
+                  {goalMessage && (
+                    <div
+                      className={`p-3 rounded-xl text-sm border flex items-center gap-2 ${
+                        goalMessage.type === 'success'
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                          : 'bg-red-500/10 border-red-500/30 text-red-300'
+                      }`}
+                    >
+                      {goalMessage.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+                      {goalMessage.text}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      type="submit"
+                      disabled={savingGoal || !goalFormDirty}
+                      className="px-5 py-3 rounded-xl bg-emerald-500 text-slate-950 font-bold hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {savingGoal ? 'Saving to Google Sheets...' : 'Save Goal'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingGoal || !goalFormDirty}
+                      onClick={() => {
+                        setGoalDraft(null);
+                        setGoalMessage(null);
+                      }}
+                      className="px-5 py-3 rounded-xl bg-slate-800 text-slate-300 font-semibold hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </form>
+              )}
+            </section>
+
+            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <h3 className="text-lg font-bold text-white mb-4">Squad Goals Overview</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {SQUAD_MEMBERS.map((member) => {
+                  const goal = goals.find((g) => g.member === member);
+                  return (
+                    <button
+                      key={member}
+                      type="button"
+                      onClick={() => selectGoalMember(member)}
+                      disabled={savingGoal}
+                      className="text-left bg-slate-950 border border-slate-800 rounded-xl p-4 hover:border-emerald-500/40 transition"
+                    >
+                      <div className="font-bold text-white">{MEMBER_AVATARS[member]} {member}</div>
+                      {goal?.primaryGoal ? (
+                        <>
+                          <p className="text-sm text-emerald-300 mt-1">{goal.primaryGoal}</p>
+                          {goal.focusAreas && <p className="text-xs text-cyan-400 mt-1">Focus: {goal.focusAreas}</p>}
+                          {goal.goalDescription && <p className="text-sm text-slate-400 mt-2 break-words line-clamp-3">{goal.goalDescription}</p>}
+                        </>
+                      ) : (
+                        <p className="text-sm text-slate-600 mt-1">No goal set yet. Click to add one.</p>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
           </div>
         )}
 
