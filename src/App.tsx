@@ -22,6 +22,7 @@ import {
 import BodyBalance from './BodyBalance';
 import ExerciseLogger from './ExerciseLogger';
 import ProgressView from './ProgressView';
+import StrengthSummary from './StrengthSummary';
 import { buildExercisePayload, summarizeSession, type DraftExercise, type SetRecord } from './exercises';
 
 const WEB_APP_URL =
@@ -1474,11 +1475,26 @@ export default function App(): React.ReactElement {
                   })}
                 </div>
 
-                {!selectedMemberReport || selectedMemberReport.status !== 'SUCCESS' || !selectedMemberReport.report ? (
+                {(() => {
+                  // Strength numbers for this report week, calculated from logged sets.
+                  const strength = (
+                    <StrengthSummary
+                      sets={setRecords}
+                      member={selectedReportMember}
+                      weekStart={selectedReportWeek.slice(0, 10)}
+                      weekEnd={(selectedWeekReports[0]?.weekEnd || '').slice(0, 10)}
+                      muscleOrder={MUSCLE_GROUPS.map((mg) => mg.name)}
+                      loading={setsLoading}
+                    />
+                  );
+                  return !selectedMemberReport || selectedMemberReport.status !== 'SUCCESS' || !selectedMemberReport.report ? (
+                  <div className="space-y-5">
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-10 text-center">
                     {selectedMemberReport?.status === 'ERROR' ? <AlertTriangle className="w-9 h-9 mx-auto mb-3 text-red-400" /> : <BrainCircuit className="w-9 h-9 mx-auto mb-3 text-slate-600" />}
                     <h3 className="text-lg font-bold text-white">{selectedMemberReport?.status === 'ERROR' ? 'Report generation failed' : 'Report not generated yet'}</h3>
                     <p className="text-sm text-slate-400 mt-2">{selectedMemberReport?.status === 'ERROR' ? 'The report can be retried from Apps Script. Other members’ reports remain available.' : 'This member’s report will appear once processing is complete.'}</p>
+                  </div>
+                  {strength}
                   </div>
                 ) : (
                   <div className="space-y-5">
@@ -1524,6 +1540,8 @@ export default function App(): React.ReactElement {
                             </section>
                           </div>
 
+                          {strength}
+
                           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
                             <h4 className="font-bold text-white mb-4">Training analysis</h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -1564,7 +1582,8 @@ export default function App(): React.ReactElement {
                       );
                     })()}
                   </div>
-                )}
+                );
+                })()}
               </>
             )}
           </div>
