@@ -20,9 +20,13 @@ import {
   PersonStanding,
 } from 'lucide-react';
 import BodyBalance from './BodyBalance';
+import ExerciseLogger from './ExerciseLogger';
+import ProgressView from './ProgressView';
+import StrengthSummary from './StrengthSummary';
+import { buildExercisePayload, summarizeSession, type DraftExercise, type SetRecord } from './exercises';
 
 const WEB_APP_URL =
-  'https://script.google.com/macros/s/AKfycbxAqsB3TankAM9IVWKts7yZuZNieijgBCm-0DoJaicEaTo0viw2_3c1Wr0V5obk-Z2q0A/exec';
+  'https://script.google.com/macros/s/AKfycbxLmzZB2Wg95Lew6te5uXGwjNtyWuef3xjHPkqYBigvHo9mO5RU1zVQubGiT78mbMFejw/exec';
 
 const TIME_ZONE = 'Asia/Kolkata';
 
@@ -354,7 +358,7 @@ export default function App(): React.ReactElement {
   const [savingGoal, setSavingGoal] = useState(false);
   const [goalMessage, setGoalMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'balance' | 'reports' | 'goals' | 'log' | 'manage'>(
+  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'balance' | 'progress' | 'reports' | 'goals' | 'log' | 'manage'>(
     'leaderboard'
   );
 
@@ -371,6 +375,13 @@ export default function App(): React.ReactElement {
   const [formMuscles, setFormMuscles] = useState<string[]>([]);
 
   const [formNotes, setFormNotes] = useState('');
+
+  // Optional sets / reps / weight for the workout being logged.
+  const [formExercises, setFormExercises] = useState<DraftExercise[]>([]);
+
+  // All logged sets from the "Exercise Sets" sheet.
+  const [setRecords, setSetRecords] = useState<SetRecord[]>([]);
+  const [setsLoading, setSetsLoading] = useState(true);
 
   const [showToast, setShowToast] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -603,6 +614,60 @@ export default function App(): React.ReactElement {
     }
   };
 
+  // Fetch logged sets. Old workouts simply have none.
+  const fetchSets = useCallback(async () => {
+    setSetsLoading(true);
+
+    try {
+      const separator = WEB_APP_URL.includes('?') ? '&' : '?';
+      const response = await fetch(
+        `${WEB_APP_URL}${separator}action=sets&t=${Date.now()}`,
+        { cache: 'no-store' }
+      );
+
+      if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+
+      const data = await response.json();
+      // An older Apps Script returns {error: "Unknown action"}: treat as no sets.
+      if (!Array.isArray(data)) {
+        setSetRecords([]);
+        return;
+      }
+
+      setSetRecords(
+        data.map((item: any) => ({
+          requestId: String(item.requestId ?? ''),
+          date: String(item.date ?? '').slice(0, 10),
+          member: String(item.member ?? '').trim(),
+          exercise: String(item.exercise ?? '').trim(),
+          muscle: String(item.muscle ?? '').trim(),
+          setNumber: Number(item.setNumber) || 0,
+          reps: Number(item.reps) || 0,
+          weight: Number(item.weight) || 0,
+        }))
+      );
+    } catch (error) {
+      console.error('Failed to fetch exercise sets:', error);
+    } finally {
+      setSetsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSets();
+  }, [fetchSets]);
+
+  // Sets grouped by workout, for the Manage Workouts list.
+  const setsByWorkout = useMemo(() => {
+    const map = new Map<string, Map<string, SetRecord[]>>();
+    setRecords.forEach((set) => {
+      const workout = map.get(set.requestId) || new Map<string, SetRecord[]>();
+      workout.set(set.exercise, [...(workout.get(set.exercise) || []), set]);
+      map.set(set.requestId, workout);
+    });
+    return map;
+  }, [setRecords]);
+
   // Weekly / All-time filtering.
   const filteredLogs = useMemo(() => {
     if (timeFilter === 'week') {
@@ -712,8 +777,18 @@ export default function App(): React.ReactElement {
       return;
     }
 
-    if (formMuscles.length === 0) {
-      alert('Select at least one muscle group!');
+    const exercisePayload = buildExercisePayload(formExercises);
+    if (exercisePayload.error !== undefined) {
+      alert(exercisePayload.error);
+      return;
+    }
+    const exercises = exercisePayload.exercises;
+
+    // Muscle groups = ticked chips + groups of logged exercises.
+    const muscles = Array.from(new Set([...formMuscles, ...exercises.map((ex) => ex.muscle)]));
+
+    if (muscles.length === 0) {
+      alert('Select at least one muscle group or add an exercise!');
       return;
     }
 
@@ -734,7 +809,8 @@ export default function App(): React.ReactElement {
       date: formDate,
       member: formMember,
       notes: formNotes,
-      muscles: formMuscles,
+      muscles,
+      exercises,
     };
 
     try {
@@ -760,13 +836,14 @@ export default function App(): React.ReactElement {
       pendingRequestIdRef.current = null;
       setFormMuscles([]);
       setFormNotes('');
+      setFormExercises([]);
       setFormDate(getTodayDate());
 
       setShowToast(true);
       window.setTimeout(() => setShowToast(false), 3000);
 
       // Refresh from the source of truth; do not add an optimistic record.
-      await fetchLogs();
+      await Promise.all([fetchLogs(), fetchSets()]);
     } catch (error) {
       console.error('Submission or verification failed:', error);
 
@@ -828,7 +905,7 @@ export default function App(): React.ReactElement {
 
       if (!deleted) throw new Error('Google Sheets has not confirmed the deletion. Please refresh and check before retrying.');
 
-      await fetchLogs();
+      await Promise.all([fetchLogs(), fetchSets()]);
       alert('Workout deleted successfully.');
     } catch (error) {
       console.error('Workout deletion failed:', error);
@@ -906,6 +983,18 @@ export default function App(): React.ReactElement {
           </button>
 
           <button
+            onClick={() => setActiveTab('progress')}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 ${
+              activeTab === 'progress'
+                ? 'bg-emerald-500 text-slate-950'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            <TrendingUp className="w-4 h-4" />
+            Progress
+          </button>
+
+          <button
             onClick={() => setActiveTab('reports')}
             className={`px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 ${
               activeTab === 'reports'
@@ -958,11 +1047,12 @@ export default function App(): React.ReactElement {
               fetchLogs();
               fetchReports();
               fetchGoals();
+              fetchSets();
             }}
-            disabled={loading || reportsLoading || goalsLoading}
+            disabled={loading || reportsLoading || goalsLoading || setsLoading}
             className="px-3 py-2 rounded-lg text-sm bg-slate-800 text-emerald-400 hover:bg-slate-700 disabled:opacity-50 flex items-center gap-2"
           >
-            <RefreshCw className={`w-4 h-4 ${loading || reportsLoading || goalsLoading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${loading || reportsLoading || goalsLoading || setsLoading ? 'animate-spin' : ''}`} />
             Refresh Data
           </button>
         </div>
@@ -1257,6 +1347,17 @@ export default function App(): React.ReactElement {
           )
         )}
 
+        {/* STRENGTH PROGRESS */}
+        {activeTab === 'progress' && (
+          <ProgressView
+            sets={setRecords}
+            members={SQUAD_MEMBERS}
+            avatars={MEMBER_AVATARS}
+            today={getTodayDate()}
+            loading={setsLoading}
+          />
+        )}
+
         {/* AI WEEKLY REPORTS */}
         {activeTab === 'reports' && (
           <div className="space-y-6">
@@ -1374,11 +1475,26 @@ export default function App(): React.ReactElement {
                   })}
                 </div>
 
-                {!selectedMemberReport || selectedMemberReport.status !== 'SUCCESS' || !selectedMemberReport.report ? (
+                {(() => {
+                  // Strength numbers for this report week, calculated from logged sets.
+                  const strength = (
+                    <StrengthSummary
+                      sets={setRecords}
+                      member={selectedReportMember}
+                      weekStart={selectedReportWeek.slice(0, 10)}
+                      weekEnd={(selectedWeekReports[0]?.weekEnd || '').slice(0, 10)}
+                      muscleOrder={MUSCLE_GROUPS.map((mg) => mg.name)}
+                      loading={setsLoading}
+                    />
+                  );
+                  return !selectedMemberReport || selectedMemberReport.status !== 'SUCCESS' || !selectedMemberReport.report ? (
+                  <div className="space-y-5">
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-10 text-center">
                     {selectedMemberReport?.status === 'ERROR' ? <AlertTriangle className="w-9 h-9 mx-auto mb-3 text-red-400" /> : <BrainCircuit className="w-9 h-9 mx-auto mb-3 text-slate-600" />}
                     <h3 className="text-lg font-bold text-white">{selectedMemberReport?.status === 'ERROR' ? 'Report generation failed' : 'Report not generated yet'}</h3>
                     <p className="text-sm text-slate-400 mt-2">{selectedMemberReport?.status === 'ERROR' ? 'The report can be retried from Apps Script. Other members’ reports remain available.' : 'This member’s report will appear once processing is complete.'}</p>
+                  </div>
+                  {strength}
                   </div>
                 ) : (
                   <div className="space-y-5">
@@ -1424,6 +1540,8 @@ export default function App(): React.ReactElement {
                             </section>
                           </div>
 
+                          {strength}
+
                           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
                             <h4 className="font-bold text-white mb-4">Training analysis</h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -1464,7 +1582,8 @@ export default function App(): React.ReactElement {
                       );
                     })()}
                   </div>
-                )}
+                );
+                })()}
               </>
             )}
           </div>
@@ -1687,6 +1806,16 @@ export default function App(): React.ReactElement {
                         <span className="text-xs text-slate-500">{formatDisplayDate(normalizeDate(log.timestamp))}</span>
                       </div>
                       <p className="text-sm text-emerald-300 mt-1">{log.muscles.join(' · ') || 'No muscle groups'}</p>
+                      {log.requestId && setsByWorkout.has(log.requestId) && (
+                        <ul className="mt-1 space-y-0.5">
+                          {Array.from(setsByWorkout.get(log.requestId)!.entries()).map(([exercise, sets]) => (
+                            <li key={exercise} className="text-xs text-slate-300">
+                              <span className="font-semibold text-white">{exercise}</span>{' '}
+                              <span className="text-slate-400">{summarizeSession(sets)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                       {log.notes && <p className="text-sm text-slate-400 mt-1 break-words">{log.notes}</p>}
                       {!log.requestId && <p className="text-xs text-amber-400 mt-1">Missing Request ID — cannot safely delete this entry.</p>}
                     </div>
@@ -1764,6 +1893,9 @@ export default function App(): React.ReactElement {
                 <label className="block text-sm font-semibold text-slate-300 mb-2">
                   Targeted Muscle Groups ({formMuscles.length}/8)
                 </label>
+                <p className="text-xs text-slate-500 -mt-1 mb-2">
+                  Ticked automatically for exercises you add below. Tick Cardio or others here.
+                </p>
 
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                   {MUSCLE_GROUPS.map((mg) => {
@@ -1793,14 +1925,33 @@ export default function App(): React.ReactElement {
 
               <div>
                 <label className="block text-sm font-semibold text-slate-300 mb-2">
-                  Exercises / Notes (Optional)
+                  Exercises, Sets &amp; Weight (Optional)
+                </label>
+                <ExerciseLogger
+                  value={formExercises}
+                  onChange={(next) => {
+                    setFormExercises(next);
+                    // Tick the muscle chip for any newly added exercise.
+                    const added = next.map((ex) => ex.muscle).filter(Boolean);
+                    setFormMuscles((prev) => Array.from(new Set([...prev, ...added])));
+                  }}
+                  member={formMember}
+                  history={setRecords}
+                  muscleGroups={MUSCLE_GROUPS.filter((mg) => mg.name !== 'Cardio').map((mg) => mg.name)}
+                  disabled={submitting}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-300 mb-2">
+                  Notes (Optional)
                 </label>
 
                 <textarea
                   rows={3}
                   value={formNotes}
                   onChange={(e) => setFormNotes(e.target.value)}
-                  placeholder="e.g. Bench press 4x8, Dips 3x10..."
+                  placeholder="e.g. Felt strong, short on time, used the Smith machine..."
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500"
                 />
               </div>

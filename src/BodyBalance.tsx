@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type React from 'react';
+import { BODY_BACK, BODY_FRONT, OUTLINE_BACK, OUTLINE_FRONT } from './anatomyData';
 import { Activity, AlertTriangle, CheckCircle, Heart, Target, XCircle } from 'lucide-react';
 
 /* ------------------------------------------------------------------ */
@@ -147,118 +148,114 @@ const computeBalance = (
 /* Body figure                                                         */
 /* ------------------------------------------------------------------ */
 
-type Shape =
-  | { kind: 'rect'; x: number; y: number; w: number; h: number; r: number }
-  | { kind: 'ellipse'; cx: number; cy: number; rx: number; ry: number };
+// Which illustrated muscles make up each tracked group.
+// Anything not listed (head, hands, knees, forearms...) is drawn as plain body.
+const MUSCLE_TO_GROUP: Record<string, string> = {
+  chest: 'Chest',
+  trapezius: 'Back',
+  'upper-back': 'Back',
+  'lower-back': 'Back',
+  deltoids: 'Shoulders',
+  biceps: 'Biceps',
+  triceps: 'Triceps',
+  abs: 'Abs',
+  obliques: 'Abs',
+  quadriceps: 'Legs',
+  hamstring: 'Legs',
+  calves: 'Legs',
+  gluteal: 'Legs',
+  adductors: 'Legs',
+  tibialis: 'Legs',
+};
 
-interface Region {
-  group: string;
-  shapes: Shape[];
-}
-
-// Shared silhouette pieces (not tied to any muscle group).
-const SILHOUETTE: Shape[] = [
-  { kind: 'ellipse', cx: 100, cy: 34, rx: 21, ry: 24 },
-  { kind: 'rect', x: 90, y: 54, w: 20, h: 18, r: 6 },
-  { kind: 'rect', x: 64, y: 74, w: 72, h: 136, r: 22 },
-  { kind: 'rect', x: 28, y: 160, w: 20, h: 62, r: 10 },
-  { kind: 'rect', x: 152, y: 160, w: 20, h: 62, r: 10 },
-  { kind: 'rect', x: 68, y: 196, w: 64, h: 30, r: 12 },
-];
-
-const FRONT: Region[] = [
-  { group: 'Shoulders', shapes: [
-    { kind: 'ellipse', cx: 56, cy: 92, rx: 17, ry: 16 },
-    { kind: 'ellipse', cx: 144, cy: 92, rx: 17, ry: 16 },
-  ] },
-  { group: 'Chest', shapes: [
-    { kind: 'rect', x: 69, y: 80, w: 30, h: 42, r: 10 },
-    { kind: 'rect', x: 101, y: 80, w: 30, h: 42, r: 10 },
-  ] },
-  { group: 'Abs', shapes: [{ kind: 'rect', x: 79, y: 125, w: 42, h: 70, r: 10 }] },
-  { group: 'Biceps', shapes: [
-    { kind: 'rect', x: 34, y: 108, w: 20, h: 50, r: 10 },
-    { kind: 'rect', x: 146, y: 108, w: 20, h: 50, r: 10 },
-  ] },
-  { group: 'Legs', shapes: [
-    { kind: 'rect', x: 69, y: 214, w: 29, h: 96, r: 13 },
-    { kind: 'rect', x: 102, y: 214, w: 29, h: 96, r: 13 },
-    { kind: 'rect', x: 72, y: 314, w: 23, h: 80, r: 11 },
-    { kind: 'rect', x: 105, y: 314, w: 23, h: 80, r: 11 },
-  ] },
-];
-
-const BACK: Region[] = [
-  { group: 'Shoulders', shapes: [
-    { kind: 'ellipse', cx: 56, cy: 92, rx: 17, ry: 16 },
-    { kind: 'ellipse', cx: 144, cy: 92, rx: 17, ry: 16 },
-  ] },
-  { group: 'Back', shapes: [
-    { kind: 'rect', x: 69, y: 78, w: 62, h: 66, r: 14 },
-    { kind: 'rect', x: 76, y: 146, w: 48, h: 46, r: 12 },
-  ] },
-  { group: 'Triceps', shapes: [
-    { kind: 'rect', x: 34, y: 108, w: 20, h: 50, r: 10 },
-    { kind: 'rect', x: 146, y: 108, w: 20, h: 50, r: 10 },
-  ] },
-  { group: 'Legs', shapes: [
-    { kind: 'rect', x: 68, y: 196, w: 31, h: 34, r: 13 },
-    { kind: 'rect', x: 101, y: 196, w: 31, h: 34, r: 13 },
-    { kind: 'rect', x: 69, y: 233, w: 29, h: 77, r: 13 },
-    { kind: 'rect', x: 102, y: 233, w: 29, h: 77, r: 13 },
-    { kind: 'rect', x: 72, y: 314, w: 23, h: 80, r: 11 },
-    { kind: 'rect', x: 105, y: 314, w: 23, h: 80, r: 11 },
-  ] },
-];
-
-const renderShape = (shape: Shape, key: string, props: React.SVGProps<SVGElement>) =>
-  shape.kind === 'rect' ? (
-    <rect key={key} x={shape.x} y={shape.y} width={shape.w} height={shape.h} rx={shape.r}
-      {...(props as React.SVGProps<SVGRectElement>)} />
-  ) : (
-    <ellipse key={key} cx={shape.cx} cy={shape.cy} rx={shape.rx} ry={shape.ry}
-      {...(props as React.SVGProps<SVGEllipseElement>)} />
-  );
+const BODY_FILL: Record<string, string> = { hair: '#1e293b' };
+const DEFAULT_BODY_FILL = '#475569';
 
 interface FigureProps {
   title: string;
-  regions: Region[];
+  side: 'front' | 'back';
   byGroup: Record<string, GroupBalance>;
   active: string | null;
   onHover: (group: string | null, e?: React.MouseEvent) => void;
 }
 
-function BodyFigure({ title, regions, byGroup, active, onHover }: FigureProps) {
+function BodyFigure({ title, side, byGroup, active, onHover }: FigureProps) {
+  const parts = side === 'front' ? BODY_FRONT : BODY_BACK;
+  const outline = side === 'front' ? OUTLINE_FRONT : OUTLINE_BACK;
+  const viewBox = side === 'front' ? '0 0 724 1448' : '724 0 724 1448';
+  const cx = side === 'front' ? 362 : 1086;
+  const glowId = `glow-${side}`;
+  const spotId = `spot-${side}`;
+  const hatchId = `hatch-${side}`;
+
   return (
     <figure className="flex flex-col items-center">
-      <svg viewBox="0 0 200 400" className="w-full max-w-[230px]" role="img" aria-label={`${title} body view`}>
-        {SILHOUETTE.map((s, i) => renderShape(s, `s${i}`, { fill: '#0f172a', stroke: '#334155', strokeWidth: 1.5 }))}
-        {regions.map((region) => {
-          const balance = byGroup[region.group];
-          if (!balance) return null;
+      <svg viewBox={viewBox} className="w-full max-w-[280px]" role="img" aria-label={`${title} body view`}>
+        <defs>
+          <radialGradient id={spotId} cx="50%" cy="40%" r="60%">
+            <stop offset="0%" stopColor="#1e293b" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="#0f172a" stopOpacity="0" />
+          </radialGradient>
+          <pattern id={hatchId} width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="14" stroke="#fbbf24" strokeWidth="4" strokeOpacity="0.75" />
+          </pattern>
+          <filter id={glowId} x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="6" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+
+        {/* Spotlight and floor shadow so the figure reads as an illustration */}
+        <ellipse cx={cx} cy={620} rx={360} ry={640} fill={`url(#${spotId})`} />
+        <ellipse cx={cx} cy={1400} rx={170} ry={22} fill="#020617" opacity={0.7} />
+
+        {parts.map((part) => {
+          const group = MUSCLE_TO_GROUP[part.slug];
+          const balance = group ? byGroup[group] : undefined;
+
+          if (!balance) {
+            return part.paths.map((d, i) => (
+              <path key={`${part.slug}-${i}`} d={d} fill={BODY_FILL[part.slug] || DEFAULT_BODY_FILL} />
+            ));
+          }
+
           const lacking = balance.ratio < 0.5;
-          const dim = active !== null && active !== region.group;
+          const isActive = active === group;
+          const dim = active !== null && !isActive;
           return (
             <g
-              key={region.group}
-              onMouseMove={(e) => onHover(region.group, e)}
+              key={part.slug}
+              onMouseMove={(e) => onHover(group, e)}
               onMouseLeave={() => onHover(null)}
-              onClick={(e) => onHover(region.group, e)}
+              onClick={(e) => onHover(group, e)}
               className="cursor-pointer"
-              style={{ opacity: dim ? 0.45 : 1, transition: 'opacity 120ms' }}
+              filter={isActive || balance.ratio >= 1 ? `url(#${glowId})` : undefined}
+              style={{ opacity: dim ? 0.35 : 1, transition: 'opacity 120ms' }}
             >
-              <title>{`${region.group}: ${balance.sessions}/${balance.target} sessions`}</title>
-              {region.shapes.map((shape, i) =>
-                renderShape(shape, `${region.group}-${i}`, {
-                  fill: fillFor(balance.ratio),
-                  stroke: lacking ? '#fbbf24' : '#020617',
-                  strokeWidth: 2,
-                  strokeDasharray: lacking ? '4 3' : undefined,
-                })
-              )}
+              <title>{`${group}: ${balance.sessions}/${balance.target} sessions`}</title>
+              {part.paths.map((d, i) => (
+                <g key={i}>
+                  <path
+                    d={d}
+                    fill={fillFor(balance.ratio)}
+                    stroke="#0f172a"
+                    strokeWidth={1}
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  {lacking && <path d={d} fill={`url(#${hatchId})`} pointerEvents="none" />}
+                </g>
+              ))}
             </g>
           );
         })}
+
+        {outline.map((d, i) => (
+          <path key={`outline-${i}`} d={d} fill="none" stroke="#64748b" strokeWidth={1} vectorEffect="non-scaling-stroke" pointerEvents="none" />
+        ))}
       </svg>
       <figcaption className="text-[11px] font-semibold uppercase tracking-widest text-slate-500 mt-1">{title}</figcaption>
     </figure>
@@ -341,8 +338,8 @@ export default function BodyBalance(props: BodyBalanceProps) {
           </div>
 
           <div data-figure-wrap className="relative grid grid-cols-2 gap-4" onMouseLeave={() => setHover(null)}>
-            <BodyFigure title="Front" regions={FRONT} byGroup={byGroup} active={hover?.group ?? null} onHover={handleHover} />
-            <BodyFigure title="Back" regions={BACK} byGroup={byGroup} active={hover?.group ?? null} onHover={handleHover} />
+            <BodyFigure title="Front" side="front" byGroup={byGroup} active={hover?.group ?? null} onHover={handleHover} />
+            <BodyFigure title="Back" side="back" byGroup={byGroup} active={hover?.group ?? null} onHover={handleHover} />
 
             {hover && hovered && (
               <div
@@ -379,7 +376,10 @@ export default function BodyBalance(props: BodyBalanceProps) {
               </span>
             ))}
             <span className="flex items-center gap-1.5">
-              <span className="inline-block w-3 h-3 rounded border-2 border-dashed border-amber-400" />
+              <span
+                className="inline-block w-3 h-3 rounded"
+                style={{ background: 'repeating-linear-gradient(45deg, #fbbf24 0 2px, #1e293b 2px 5px)' }}
+              />
               Lacking (&lt; 50%)
             </span>
           </div>
