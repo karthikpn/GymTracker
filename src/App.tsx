@@ -17,10 +17,12 @@ import {
   CheckCircle,
   Sparkles,
   Trash2,
+  PersonStanding,
 } from 'lucide-react';
+import BodyBalance from './BodyBalance';
 
 const WEB_APP_URL =
-  'https://script.google.com/macros/s/AKfycby5i3lqiW92qrC0Xm1IF_DQANExyxUMZ7ZBrpCTyl_NeQvkUrslpKHIzPp8AelfTPFRTg/exec';
+  'https://script.google.com/macros/s/AKfycbxAqsB3TankAM9IVWKts7yZuZNieijgBCm-0DoJaicEaTo0viw2_3c1Wr0V5obk-Z2q0A/exec';
 
 const TIME_ZONE = 'Asia/Kolkata';
 
@@ -352,7 +354,7 @@ export default function App(): React.ReactElement {
   const [savingGoal, setSavingGoal] = useState(false);
   const [goalMessage, setGoalMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'reports' | 'goals' | 'log' | 'manage'>(
+  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'balance' | 'reports' | 'goals' | 'log' | 'manage'>(
     'leaderboard'
   );
 
@@ -892,6 +894,18 @@ export default function App(): React.ReactElement {
           </button>
 
           <button
+            onClick={() => setActiveTab('balance')}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 ${
+              activeTab === 'balance'
+                ? 'bg-emerald-500 text-slate-950'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            <PersonStanding className="w-4 h-4" />
+            Body Balance
+          </button>
+
+          <button
             onClick={() => setActiveTab('reports')}
             className={`px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 ${
               activeTab === 'reports'
@@ -1223,6 +1237,24 @@ export default function App(): React.ReactElement {
               ))}
             </div>
           </div>
+        )}
+
+        {/* BODY BALANCE */}
+        {activeTab === 'balance' && (
+          loading && logs.length === 0 ? (
+            <p className="text-center text-slate-400 py-8">Loading Google Sheets data...</p>
+          ) : (
+            <BodyBalance
+              logs={logs}
+              goals={goals}
+              members={SQUAD_MEMBERS}
+              muscleGroups={MUSCLE_GROUPS}
+              avatars={MEMBER_AVATARS}
+              normalizeDate={normalizeDate}
+              normalizeMuscle={normalizeMuscleGroup}
+              today={getTodayDate()}
+            />
+          )
         )}
 
         {/* AI WEEKLY REPORTS */}
