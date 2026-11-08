@@ -364,6 +364,18 @@ export default function App(): React.ReactElement {
 
   const [timeFilter, setTimeFilter] = useState<'week' | 'alltime'>('week');
 
+  // On phones the tabs live in a compact menu bar; tapping it opens a dropdown.
+  const [taskbarMenuOpen, setTaskbarMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (!taskbarMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setTaskbarMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [taskbarMenuOpen]);
+
   const [selectedMemberModal, setSelectedMemberModal] =
     useState<MemberStat | null>(null);
 
@@ -938,7 +950,102 @@ export default function App(): React.ReactElement {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-12">
       {/* Navigation */}
-      <nav className="border-b border-slate-800 bg-slate-900/50 backdrop-blur px-6 py-4 sticky top-0 z-50 flex justify-between items-center flex-wrap gap-4">
+      {/* MOBILE MENU BAR: always shown on phones instead of the full tab menu */}
+      {(() => {
+        const tabs = [
+          { key: 'leaderboard', label: 'Leaderboard', Icon: Trophy },
+          { key: 'alltime', label: 'All-Time', Icon: User },
+          { key: 'balance', label: 'Body Balance', Icon: PersonStanding },
+          { key: 'progress', label: 'Progress', Icon: TrendingUp },
+          { key: 'reports', label: 'AI Reports', Icon: BrainCircuit },
+          { key: 'goals', label: 'Goals', Icon: Target },
+          { key: 'manage', label: 'Manage', Icon: Trash2 },
+          { key: 'log', label: 'Log Workout', Icon: PlusCircle },
+        ] as const;
+        const current = tabs.find((t) => t.key === activeTab) || tabs[0];
+        const refreshing = loading || reportsLoading || goalsLoading || setsLoading;
+
+        return (
+          <>
+          {/* Tap outside to close */}
+          <button
+            type="button"
+            aria-label="Close menu"
+            tabIndex={taskbarMenuOpen ? 0 : -1}
+            onClick={() => setTaskbarMenuOpen(false)}
+            className={`md:hidden fixed inset-0 z-40 bg-slate-950/60 transition-opacity duration-300 ${
+              taskbarMenuOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            }`}
+          />
+          <div className="md:hidden sticky top-0 z-50">
+            <button
+              type="button"
+              onClick={() => setTaskbarMenuOpen((open) => !open)}
+              aria-expanded={taskbarMenuOpen}
+              className="w-full flex items-center gap-3 px-4 h-14 bg-slate-900/90 backdrop-blur border-b border-slate-800 text-left shadow-lg shadow-black/30"
+            >
+              <Dumbbell className="h-6 w-6 text-emerald-400 shrink-0" />
+              <span className="flex-1 min-w-0 flex items-center gap-2 text-white font-semibold">
+                <current.Icon className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="truncate">{current.label}</span>
+              </span>
+              <span className="flex items-center gap-1 text-xs font-semibold text-slate-300 bg-slate-800 rounded-lg px-3 py-1.5">
+                Menu
+                <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${taskbarMenuOpen ? 'rotate-180' : ''}`} />
+              </span>
+            </button>
+
+            {/* Dropdown menu (overlays the page instead of pushing it down) */}
+            <div
+              className={`absolute inset-x-0 top-full grid transition-all duration-300 ease-out ${
+                taskbarMenuOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0 pointer-events-none'
+              }`}
+            >
+              <div className="overflow-hidden">
+                <div className="bg-slate-900/95 backdrop-blur border-b border-slate-800 p-3 grid grid-cols-2 gap-2 shadow-xl shadow-black/40">
+                  {tabs.map(({ key, label, Icon }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(key);
+                        setTaskbarMenuOpen(false);
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold text-left ${
+                        activeTab === key ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300 active:bg-slate-700'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4 shrink-0" />
+                      {label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      fetchLogs();
+                      fetchReports();
+                      fetchGoals();
+                      fetchSets();
+                      setTaskbarMenuOpen(false);
+                    }}
+                    disabled={refreshing}
+                    className="col-span-2 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm bg-slate-800 text-emerald-400 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+                    Refresh Data
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          </>
+        );
+      })()}
+
+      <nav
+        className="border-b border-slate-800 bg-slate-900/50 backdrop-blur px-6 py-4 sticky top-0 z-40 hidden md:flex justify-between items-center flex-wrap gap-4"
+      >
         <div className="flex items-center space-x-3">
           <Dumbbell className="h-8 w-8 text-emerald-400" />
 
