@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type React from 'react';
-import { Dumbbell, TrendingUp, Trophy } from 'lucide-react';
+import MemberPicker from './MemberPicker';
+import { ArrowDownRight, ArrowUpRight, ChevronDown, Dumbbell, Minus, TrendingUp, Trophy } from 'lucide-react';
 import {
   estimateOneRepMax,
   exerciseKey,
@@ -40,6 +40,10 @@ interface ExerciseSummary {
   bodyweightOnly: boolean;
   lastDate: string;
   recentPr: boolean;
+  /** Change of the latest session vs the one before it: % for weighted, reps for bodyweight. null = only one session. */
+  lastChange: number | null;
+  /** Change of the latest session vs the first one (overall trend). */
+  overallChange: number | null;
 }
 
 // Validated pair for the dark surface (dataviz validator: all checks pass).
@@ -110,6 +114,11 @@ const buildSummaries = (sets: SetRecord[], member: string, today: string): Exerc
         (bodyweightOnly ? s.maxReps > top.maxReps : s.bestE1rm > top.bestE1rm) ? s : top
       );
       const last = sessions[sessions.length - 1];
+      const scoreOf = (s: Session) => (bodyweightOnly ? s.maxReps : s.bestE1rm);
+      const change = (from: Session, to: Session) => {
+        if (bodyweightOnly) return scoreOf(to) - scoreOf(from);
+        return scoreOf(from) > 0 ? ((scoreOf(to) - scoreOf(from)) / scoreOf(from)) * 100 : null;
+      };
 
       return {
         key,
@@ -121,18 +130,44 @@ const buildSummaries = (sets: SetRecord[], member: string, today: string): Exerc
         bodyweightOnly,
         lastDate: last.date,
         recentPr: sessions.some((s) => s.isPr && daysBetween(s.date, today) <= 7),
+        lastChange: sessions.length > 1 ? change(sessions[sessions.length - 2], last) : null,
+        overallChange: sessions.length > 1 ? change(sessions[0], last) : null,
       };
     })
     .sort((a, b) => b.lastDate.localeCompare(a.lastDate) || a.name.localeCompare(b.name));
 };
 
 /* ------------------------------------------------------------------ */
-/* Line chart                                                          */
+/* Small helpers                                                       */
 /* ------------------------------------------------------------------ */
+
+const formatChange = (value: number | null, bodyweight: boolean) => {
+  if (value === null) return null;
+  const rounded = bodyweight ? Math.round(value) : Math.round(value * 10) / 10;
+  if (rounded === 0) return { text: 'Same as last time', tone: 'flat' as const, Icon: Minus };
+  const up = rounded > 0;
+  const text = bodyweight
+    ? `${up ? '+' : ''}${rounded} rep${Math.abs(rounded) === 1 ? '' : 's'}`
+    : `${up ? '+' : ''}${formatKg(rounded)}%`;
+  return { text, tone: up ? ('up' as const) : ('down' as const), Icon: up ? ArrowUpRight : ArrowDownRight };
+};
+
+const toneClass = {
+  up: 'text-emerald-300',
+  down: 'text-amber-300',
+  flat: 'text-slate-400',
+};
+
+/** Sorts exercises by muscle group order, then by name. */
+const MUSCLE_ORDER = ['Chest', 'Back', 'Shoulders', 'Biceps', 'Triceps', 'Legs', 'Abs', 'Cardio'];
+const muscleRank = (m: string) => {
+  const i = MUSCLE_ORDER.indexOf(m);
+  return i === -1 ? 99 : i;
+};
 
 function useWidth<T extends HTMLElement>() {
   const ref = useRef<T>(null);
-  const [width, setWidth] = useState(600);
+  const [width, setWidth] = useState(0);
   useEffect(() => {
     if (!ref.current) return;
     const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
@@ -154,33 +189,31 @@ const niceTicks = (min: number, max: number, count = 4) => {
   return ticks;
 };
 
+/* ------------------------------------------------------------------ */
+/* Line chart: one series, big touch targets, tap-to-inspect           */
+/* ------------------------------------------------------------------ */
+
 function ProgressChart({ summary }: { summary: ExerciseSummary }) {
-  const [wrapRef, width] = useWidth<HTMLDivElement>();
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const [wrapRef, measured] = useWidth<HTMLDivElement>();
+  const width = measured || 320;
   const sessions = summary.sessions;
-
-  const series = summary.bodyweightOnly
-    ? [{ key: 'reps', color: SERIES.e1rm.color, label: 'Most reps in a set', dashed: false, values: sessions.map((s) => s.maxReps) }]
-    : [
-        { key: 'e1rm', color: SERIES.e1rm.color, label: SERIES.e1rm.label, dashed: false, values: sessions.map((s) => s.bestE1rm) },
-        { key: 'top', color: SERIES.top.color, label: SERIES.top.label, dashed: true, values: sessions.map((s) => s.topWeight) },
-      ];
+  // Default to the latest session so the chart always explains itself.
+  const [selected, setSelected] = useState(sessions.length - 1);
+  const values = sessions.map((s) => (summary.bodyweightOnly ? s.maxReps : s.bestE1rm));
   const unit = summary.bodyweightOnly ? 'reps' : 'kg';
+  const seriesLabel = summary.bodyweightOnly ? 'Most reps in a set' : 'Estimated max (1 rep)';
 
-  const height = 260;
-  const margin = { top: 16, right: 16, bottom: 28, left: 44 };
+  const height = 220;
+  const margin = { top: 24, right: 14, bottom: 26, left: 36 };
   const innerW = Math.max(width - margin.left - margin.right, 10);
   const innerH = height - margin.top - margin.bottom;
 
-  const all = series.flatMap((s) => s.values);
-  const ticks = niceTicks(Math.max(0, Math.min(...all) * 0.9), Math.max(...all) * 1.05);
+  const ticks = niceTicks(Math.max(0, Math.min(...values) * 0.9), Math.max(...values) * 1.08, 3);
   const yMin = ticks[0];
   const yMax = ticks[ticks.length - 1];
-
   const firstDay = sessions[0].date;
   const spanDays = Math.max(daysBetween(firstDay, sessions[sessions.length - 1].date), 1);
-  const x = (date: string) =>
-    sessions.length === 1 ? innerW / 2 : (daysBetween(firstDay, date) / spanDays) * innerW;
+  const x = (date: string) => (sessions.length === 1 ? innerW / 2 : (daysBetween(firstDay, date) / spanDays) * innerW);
   const y = (v: number) => innerH - ((v - yMin) / (yMax - yMin || 1)) * innerH;
 
   const xLabels = sessions.length <= 1
@@ -189,172 +222,143 @@ function ProgressChart({ summary }: { summary: ExerciseSummary }) {
         (s, i, arr) => arr.findIndex((o) => o.date === s.date) === i
       );
 
-  const handleMove = (e: React.MouseEvent<SVGRectElement>) => {
-    const box = e.currentTarget.getBoundingClientRect();
-    const px = e.clientX - box.left;
+  const pick = (clientX: number, target: Element) => {
+    const box = target.getBoundingClientRect();
+    const px = clientX - box.left;
     let nearest = 0;
     sessions.forEach((s, i) => {
       if (Math.abs(x(s.date) - px) < Math.abs(x(sessions[nearest].date) - px)) nearest = i;
     });
-    setHoverIndex(nearest);
+    setSelected(nearest);
   };
 
-  const hovered = hoverIndex !== null ? sessions[hoverIndex] : null;
+  const sel = sessions[selected];
+  const prev = selected > 0 ? sessions[selected - 1] : null;
+  const selChange = prev
+    ? formatChange(
+        summary.bodyweightOnly
+          ? values[selected] - values[selected - 1]
+          : values[selected - 1] > 0 ? ((values[selected] - values[selected - 1]) / values[selected - 1]) * 100 : null,
+        summary.bodyweightOnly
+      )
+    : null;
+
+  const linePath = sessions.map((s, i) => `${i ? 'L' : 'M'}${x(s.date)},${y(values[i])}`).join(' ');
+  const areaPath = sessions.length > 1
+    ? `${linePath} L${x(sessions[sessions.length - 1].date)},${innerH} L${x(sessions[0].date)},${innerH} Z`
+    : '';
 
   return (
     <div>
-      {/* Legend (always shown for 2 series) */}
-      <div className="flex flex-wrap items-center gap-4 text-xs text-slate-300 mb-2">
-        {series.map((s) => (
-          <span key={s.key} className="inline-flex items-center gap-2">
-            <svg width="22" height="8" aria-hidden="true">
-              <line x1="0" y1="4" x2="22" y2="4" stroke={s.color} strokeWidth="2" strokeDasharray={s.dashed ? '5 3' : undefined} />
-            </svg>
-            {s.label}
-          </span>
-        ))}
-        <span className="inline-flex items-center gap-1 text-slate-400">
-          <Trophy className="w-3 h-3 text-amber-400" /> = personal record
-        </span>
+      {/* Selected session readout: sits above the chart, never covers it */}
+      <div className="flex items-end justify-between gap-3 mb-2">
+        <div>
+          <div className="text-[11px] uppercase tracking-wider text-slate-500">
+            {shortDate(sel.date)} {sel.isPr && <span className="text-amber-300 font-bold">· PR 🏆</span>}
+          </div>
+          <div className="text-2xl font-extrabold text-white leading-tight">
+            {formatKg(Math.round(values[selected] * 10) / 10)} <span className="text-sm font-semibold text-slate-400">{unit}</span>
+          </div>
+          <div className="text-[11px] text-slate-400">{seriesLabel}</div>
+        </div>
+        <div className="text-right">
+          {selChange ? (
+            <div className={`inline-flex items-center gap-1 text-sm font-bold ${toneClass[selChange.tone]}`}>
+              <selChange.Icon className="w-4 h-4" /> {selChange.text}
+            </div>
+          ) : (
+            <div className="text-xs text-slate-500">First session</div>
+          )}
+          <div className="text-[11px] text-slate-500 mt-0.5">{sel.sets.map((set) => formatSet(set.weight, set.reps)).join(' · ')}</div>
+        </div>
       </div>
 
-      <div ref={wrapRef} className="relative">
-        <svg width={width} height={height} role="img" aria-label={`${summary.name} progress chart`}>
-          <g transform={`translate(${margin.left},${margin.top})`}>
-            {ticks.map((t) => (
-              <g key={t}>
-                <line x1={0} x2={innerW} y1={y(t)} y2={y(t)} stroke="#1e293b" strokeWidth={1} />
-                <text x={-8} y={y(t)} dy="0.32em" textAnchor="end" fontSize={11} fill="#64748b">
-                  {formatKg(t)}
+      <div ref={wrapRef} className="relative -mx-1">
+        {measured > 0 && (
+          <svg width={width} height={height} role="img" aria-label={`${summary.name} progress chart`} className="touch-pan-y">
+            <g transform={`translate(${margin.left},${margin.top})`}>
+              {ticks.map((t) => (
+                <g key={t}>
+                  <line x1={0} x2={innerW} y1={y(t)} y2={y(t)} stroke="#1e293b" strokeWidth={1} />
+                  <text x={-6} y={y(t)} dy="0.32em" textAnchor="end" fontSize={10} fill="#64748b">
+                    {formatKg(t)}
+                  </text>
+                </g>
+              ))}
+              {xLabels.map((s, i) => (
+                <text
+                  key={s.date}
+                  x={x(s.date)}
+                  y={innerH + 18}
+                  textAnchor={xLabels.length > 1 && i === 0 ? 'start' : i === xLabels.length - 1 && xLabels.length > 1 ? 'end' : 'middle'}
+                  fontSize={10}
+                  fill="#64748b"
+                >
+                  {shortDate(s.date)}
                 </text>
-              </g>
-            ))}
-            {xLabels.map((s, i) => (
-              <text
-                key={s.date}
-                x={x(s.date)}
-                y={innerH + 18}
-                textAnchor={xLabels.length > 1 && i === 0 ? 'start' : i === xLabels.length - 1 && xLabels.length > 1 ? 'end' : 'middle'}
-                fontSize={11}
-                fill="#64748b"
-              >
-                {shortDate(s.date)}
-              </text>
-            ))}
+              ))}
 
-            {hovered && (
-              <line x1={x(hovered.date)} x2={x(hovered.date)} y1={0} y2={innerH} stroke="#475569" strokeWidth={1} />
-            )}
+              {areaPath && <path d={areaPath} fill={SERIES.e1rm.color} fillOpacity={0.12} />}
+              {sessions.length > 1 && (
+                <path d={linePath} fill="none" stroke={SERIES.e1rm.color} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+              )}
 
-            {series.map((s) => (
-              <g key={s.key}>
-                {sessions.length > 1 && (
-                  <path
-                    d={sessions.map((sess, i) => `${i ? 'L' : 'M'}${x(sess.date)},${y(s.values[i])}`).join(' ')}
-                    fill="none"
-                    stroke={s.color}
-                    strokeWidth={2}
-                    strokeDasharray={s.dashed ? '6 4' : undefined}
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                  />
-                )}
-                {sessions.map((sess, i) => (
+              {/* Selected marker */}
+              <line x1={x(sel.date)} x2={x(sel.date)} y1={-8} y2={innerH} stroke="#475569" strokeWidth={1} strokeDasharray="3 3" />
+
+              {sessions.map((s, i) => (
+                <g key={s.requestId}>
                   <circle
-                    key={sess.requestId}
-                    cx={x(sess.date)}
-                    cy={y(s.values[i])}
-                    r={hoverIndex === i ? 5.5 : 4}
-                    fill={s.color}
-                    stroke="#0f172a"
-                    strokeWidth={2}
+                    cx={x(s.date)}
+                    cy={y(values[i])}
+                    r={i === selected ? 7 : 4.5}
+                    fill={i === selected ? '#ffffff' : SERIES.e1rm.color}
+                    stroke={i === selected ? SERIES.e1rm.color : '#0f172a'}
+                    strokeWidth={i === selected ? 3 : 2}
                   />
-                ))}
-              </g>
-            ))}
+                  {s.isPr && (
+                    <text x={x(s.date)} y={y(values[i]) - 13} textAnchor="middle" fontSize={11}>
+                      🏆
+                    </text>
+                  )}
+                </g>
+              ))}
 
-            {/* PR markers above the main series */}
-            {sessions.map((sess, i) =>
-              sess.isPr ? (
-                <text key={`pr-${sess.requestId}`} x={x(sess.date)} y={y(series[0].values[i]) - 10} textAnchor="middle" fontSize={12}>
-                  🏆
-                </text>
-              ) : null
-            )}
-
-            <rect
-              x={-8}
-              y={0}
-              width={innerW + 16}
-              height={innerH}
-              fill="transparent"
-              onMouseMove={handleMove}
-              onMouseLeave={() => setHoverIndex(null)}
-              onClick={handleMove}
-            />
-          </g>
-        </svg>
-
-        {hovered && hoverIndex !== null && (
-          <div
-            className="pointer-events-none absolute z-10 w-52 rounded-xl border border-slate-700 bg-slate-950/95 p-3 text-xs shadow-xl"
-            style={{
-              // Sit on the side of the crosshair away from the newest points.
-              left: x(hovered.date) > innerW / 2
-                ? Math.max(margin.left + x(hovered.date) - 220, 0)
-                : Math.min(margin.left + x(hovered.date) + 12, width - 216),
-              top: innerH - 40,
-            }}
-          >
-            <div className="font-bold text-white">
-              {shortDate(hovered.date)} {hovered.isPr && <span className="text-amber-300">· PR</span>}
-            </div>
-            {series.map((s) => (
-              <div key={s.key} className="flex items-center justify-between gap-2 mt-1 text-slate-300">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="inline-block w-2 h-2 rounded-full" style={{ background: s.color }} />
-                  {s.label}
-                </span>
-                <span className="font-semibold text-white">
-                  {formatKg(Math.round(s.values[hoverIndex] * 10) / 10)} {unit}
-                </span>
-              </div>
-            ))}
-            <div className="mt-2 text-slate-400">
-              {hovered.sets.map((set) => formatSet(set.weight, set.reps)).join(' · ')}
-            </div>
-          </div>
+              <rect
+                x={-margin.left}
+                y={-margin.top}
+                width={innerW + margin.left + margin.right}
+                height={innerH + margin.top}
+                fill="transparent"
+                onMouseMove={(e) => pick(e.clientX, e.currentTarget)}
+                onClick={(e) => pick(e.clientX, e.currentTarget)}
+                onTouchStart={(e) => pick(e.touches[0].clientX, e.currentTarget)}
+                onTouchMove={(e) => pick(e.touches[0].clientX, e.currentTarget)}
+              />
+            </g>
+          </svg>
         )}
       </div>
+      <p className="text-[11px] text-slate-500 text-center mt-1">Tap or drag on the chart to see each session</p>
 
-      {/* Table view of the same data */}
-      <details className="mt-3">
-        <summary className="text-xs text-slate-400 cursor-pointer hover:text-slate-200">Show as table</summary>
-        <table className="w-full mt-2 text-xs">
-          <thead>
-            <tr className="text-slate-500 text-left">
-              <th className="py-1 font-semibold">Date</th>
-              <th className="py-1 font-semibold">Sets</th>
-              {series.map((s) => (
-                <th key={s.key} className="py-1 font-semibold text-right">{s.label}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {[...sessions].reverse().map((sess) => {
-              const i = sessions.indexOf(sess);
-              return (
-                <tr key={sess.requestId} className="border-t border-slate-800 text-slate-300">
-                  <td className="py-1.5">{shortDate(sess.date)} {sess.isPr && '🏆'}</td>
-                  <td className="py-1.5">{sess.sets.map((set) => formatSet(set.weight, set.reps)).join(', ')}</td>
-                  {series.map((s) => (
-                    <td key={s.key} className="py-1.5 text-right">{formatKg(Math.round(s.values[i] * 10) / 10)} {unit}</td>
-                  ))}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <details className="mt-3 group">
+        <summary className="list-none cursor-pointer text-xs text-slate-400 hover:text-slate-200 inline-flex items-center gap-1">
+          <ChevronDown className="w-3.5 h-3.5 transition-transform group-open:rotate-180" /> All sessions
+        </summary>
+        <ul className="mt-2 divide-y divide-slate-800 rounded-xl border border-slate-800 bg-slate-950">
+          {[...sessions].reverse().map((sess) => {
+            const i = sessions.indexOf(sess);
+            return (
+              <li key={sess.requestId} className="px-3 py-2 flex items-center justify-between gap-3 text-xs">
+                <span className="text-slate-400 w-14 shrink-0">{shortDate(sess.date)}</span>
+                <span className="flex-1 min-w-0 truncate text-slate-300">{sess.sets.map((set) => formatSet(set.weight, set.reps)).join(', ')}</span>
+                <span className="font-semibold text-white shrink-0">
+                  {formatKg(Math.round(values[i] * 10) / 10)} {unit} {sess.isPr && '🏆'}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
       </details>
     </div>
   );
@@ -367,9 +371,28 @@ function ProgressChart({ summary }: { summary: ExerciseSummary }) {
 export default function ProgressView({ sets, members, avatars, today, loading }: ProgressViewProps) {
   const [member, setMember] = useState(members[0]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [openGroups, setOpenGroups] = useState<Set<string> | null>(null); // null = default (first group open)
+  const [showAllPrs, setShowAllPrs] = useState(false);
+  const chartRef = useRef<HTMLElement>(null);
 
-  const summaries = useMemo(() => buildSummaries(sets, member, today), [sets, member, today]);
+  const summaries = useMemo(
+    () => buildSummaries(sets, member, today).sort((a, b) => muscleRank(a.muscle) - muscleRank(b.muscle) || a.name.localeCompare(b.name)),
+    [sets, member, today]
+  );
   const selected = summaries.find((s) => s.key === selectedKey) || summaries[0];
+
+  // Headline numbers for the member.
+  const stats = useMemo(() => {
+    const allSessions = summaries.flatMap((s) => s.sessions);
+    const sessionIds = new Set(allSessions.map((s) => s.requestId));
+    const prsLast30 = allSessions.filter((s) => s.isPr && daysBetween(s.date, today) <= 30).length;
+    const improving = summaries.filter((s) => s.overallChange !== null && s.overallChange > 0).length;
+    const tracked = summaries.filter((s) => s.sessions.length > 1).length;
+    const volume7 = sets
+      .filter((s) => s.member === member && daysBetween(s.date, today) <= 6)
+      .reduce((sum, s) => sum + s.weight * s.reps, 0);
+    return { workouts: sessionIds.size, prsLast30, improving, tracked, volume7 };
+  }, [summaries, sets, member, today]);
 
   // Squad-wide PR feed for the last 30 days.
   const recentPrs = useMemo(
@@ -383,36 +406,56 @@ export default function ProgressView({ sets, members, avatars, today, loading }:
           )
         )
         .sort((a, b) => b.session.date.localeCompare(a.session.date))
-        .slice(0, 10),
+        .slice(0, 20),
     [sets, members, today]
   );
+  const visiblePrs = showAllPrs ? recentPrs : recentPrs.slice(0, 4);
+
+  // Lifts grouped by muscle, in a fixed order.
+  const groups = useMemo(() => {
+    const map = new Map<string, ExerciseSummary[]>();
+    summaries.forEach((s) => {
+      const key = s.muscle || 'Other';
+      map.set(key, [...(map.get(key) || []), s]);
+    });
+    return Array.from(map.entries()).map(([muscle, items]) => ({
+      muscle,
+      items,
+      prs: items.filter((i) => i.recentPr).length,
+      improving: items.filter((i) => i.lastChange !== null && i.lastChange > 0).length,
+    }));
+  }, [summaries]);
+
+  const isOpen = (muscle: string) => (openGroups ? openGroups.has(muscle) : groups[0]?.muscle === muscle);
+  const toggleGroup = (muscle: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev ?? (groups[0] ? [groups[0].muscle] : []));
+      if (next.has(muscle)) next.delete(muscle);
+      else next.add(muscle);
+      return next;
+    });
+
+  const chooseExercise = (key: string) => {
+    setSelectedKey(key);
+    // On phones the chart is above the list, so bring it into view.
+    if (window.innerWidth < 1024) chartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5 text-left">
       <div>
         <h2 className="text-2xl md:text-3xl font-extrabold text-white flex items-center gap-2">
-          <TrendingUp className="w-7 h-7 text-emerald-400" /> Strength Progress
+          <TrendingUp className="w-7 h-7 text-emerald-400" /> Progress
         </h2>
-        <p className="text-slate-400 text-sm mt-2">
-          Personal records and progress from logged sets. Estimated 1RM = weight × (1 + reps ÷ 30).
-        </p>
+        <p className="text-slate-400 text-sm mt-1">Are you getting stronger? Records and trends from your logged sets.</p>
       </div>
 
-      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-2">
-        {members.map((m) => (
-          <button
-            key={m}
-            onClick={() => { setMember(m); setSelectedKey(null); }}
-            className={`p-3 rounded-xl font-bold text-sm text-center border transition ${
-              member === m
-                ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
-            }`}
-          >
-            {avatars[m]} {m}
-          </button>
-        ))}
-      </div>
+      <MemberPicker
+        members={members}
+        avatars={avatars}
+        value={member}
+        onChange={(m) => { setMember(m); setSelectedKey(null); setOpenGroups(null); }}
+      />
 
       {loading && sets.length === 0 ? (
         <p className="text-center text-slate-400 py-8">Loading sets...</p>
@@ -420,100 +463,170 @@ export default function ProgressView({ sets, members, avatars, today, loading }:
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center">
           <Dumbbell className="w-8 h-8 mx-auto mb-3 text-slate-600" />
           <p className="text-white font-semibold">No sets logged for {member} yet.</p>
-          <p className="text-slate-400 text-sm mt-2">Add exercises with weight and reps in Log Workout to start tracking PRs.</p>
+          <p className="text-slate-400 text-sm mt-2">Add exercises with weight and reps in Log Workout to start tracking records.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-          {/* Chart */}
-          <section className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-6 min-w-0">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-              <h3 className="text-lg font-bold text-white">{selected.name}</h3>
-              <select
-                value={selected.key}
-                onChange={(e) => setSelectedKey(e.target.value)}
-                aria-label="Exercise"
-                className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
-              >
-                {summaries.map((s) => (
-                  <option key={s.key} value={s.key}>{s.name}</option>
-                ))}
-              </select>
+        <>
+          {/* Stat tiles */}
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
+            <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 sm:p-4">
+              <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-amber-300/80 font-semibold">PRs · 30d</div>
+              <div className="text-2xl sm:text-3xl font-extrabold text-white mt-1 flex items-center gap-1.5">
+                {stats.prsLast30} <Trophy className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400" />
+              </div>
             </div>
-            <ProgressChart key={`${member}-${selected.key}`} summary={selected} />
-          </section>
+            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 sm:p-4">
+              <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-slate-500 font-semibold">Improving</div>
+              <div className="text-2xl sm:text-3xl font-extrabold text-white mt-1">
+                {stats.improving}<span className="text-sm sm:text-base text-slate-500 font-semibold">/{stats.tracked}</span>
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-3 sm:p-4">
+              <div className="text-[10px] sm:text-[11px] uppercase tracking-wider text-slate-500 font-semibold">Lifted · 7d</div>
+              <div className="text-2xl sm:text-3xl font-extrabold text-white mt-1">
+                {stats.volume7 >= 1000 ? `${(stats.volume7 / 1000).toFixed(1)}t` : `${formatKg(Math.round(stats.volume7))}`}
+                {stats.volume7 < 1000 && <span className="text-sm sm:text-base text-slate-500 font-semibold"> kg</span>}
+              </div>
+            </div>
+          </div>
 
-          {/* PR table */}
-          <section className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6">
-            <h3 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
-              <Trophy className="w-5 h-5 text-amber-400" /> Personal records
-            </h3>
-            <p className="text-xs text-slate-500 mb-4">Best set per exercise. Click one to chart it.</p>
-            <ul className="space-y-2">
-              {summaries.map((s) => (
-                <li key={s.key}>
-                  <button
-                    onClick={() => setSelectedKey(s.key)}
-                    className={`w-full text-left rounded-xl border p-3 transition ${
-                      s.key === selected.key ? 'border-emerald-500/60 bg-emerald-500/5' : 'border-slate-800 bg-slate-950 hover:border-slate-700'
-                    }`}
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 lg:gap-6">
+            {/* Chart */}
+            <section ref={chartRef} className="lg:col-span-3 lg:order-2 bg-slate-900 border border-emerald-500/30 shadow-xl shadow-emerald-950/30 rounded-2xl p-4 sm:p-6 min-w-0 scroll-mt-20">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="min-w-0">
+                  <h3 className="text-lg font-bold text-white truncate">{selected.name}</h3>
+                  <div className="text-xs text-slate-500">
+                    {selected.muscle || 'No group'} · {selected.sessions.length} session{selected.sessions.length === 1 ? '' : 's'}
+                    {!selected.bodyweightOnly && ` · heaviest ${formatKg(selected.heaviest)} kg`}
+                  </div>
+                </div>
+                <div className="relative shrink-0">
+                  <select
+                    value={selected.key}
+                    onChange={(e) => setSelectedKey(e.target.value)}
+                    aria-label="Exercise"
+                    className="appearance-none bg-slate-950 border border-slate-800 rounded-lg pl-3 pr-8 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 max-w-[11rem] truncate"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-white text-sm">
-                        {s.name}
-                        {s.recentPr && (
-                          <span className="ml-2 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300">
-                            New PR
+                    {summaries.map((s) => (
+                      <option key={s.key} value={s.key}>{s.name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-slate-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
+              <ProgressChart key={`${member}-${selected.key}`} summary={selected} />
+            </section>
+
+            {/* Lifts, grouped by muscle */}
+            <section className="lg:col-span-2 lg:order-1">
+              <div className="flex items-baseline justify-between px-1 mb-2">
+                <h3 className="text-lg font-bold text-white">Your lifts</h3>
+                <span className="text-[11px] text-slate-500">Tap a lift to chart it</span>
+              </div>
+              <div className="rounded-2xl border border-slate-800 bg-slate-900 divide-y divide-slate-800 overflow-hidden">
+                {groups.map((g) => {
+                  const open = isOpen(g.muscle);
+                  return (
+                    <div key={g.muscle}>
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(g.muscle)}
+                        aria-expanded={open}
+                        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-slate-800/40"
+                      >
+                        <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform ${open ? '' : '-rotate-90'}`} />
+                        <span className="flex-1 font-semibold text-white">{g.muscle}</span>
+                        {g.prs > 0 && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300">
+                            <Trophy className="w-3 h-3" /> {g.prs} PR{g.prs === 1 ? '' : 's'}
                           </span>
                         )}
-                      </span>
-                      <span className="text-sm font-bold text-white">
-                        {s.bodyweightOnly
-                          ? `${s.best.maxReps} reps`
-                          : `${formatKg(Math.round(s.best.bestE1rm * 10) / 10)} kg`}
-                      </span>
+                        <span className="text-xs text-slate-500">{g.items.length} lift{g.items.length === 1 ? '' : 's'}</span>
+                      </button>
+
+                      {open && (
+                        <ul className="pb-1">
+                          {g.items.map((s) => {
+                            const change = formatChange(s.lastChange, s.bodyweightOnly);
+                            const active = s.key === selected.key;
+                            return (
+                              <li key={s.key}>
+                                <button
+                                  onClick={() => chooseExercise(s.key)}
+                                  className={`w-full text-left flex items-center gap-3 px-4 py-2.5 border-l-2 transition ${
+                                    active ? 'border-emerald-500 bg-emerald-500/5' : 'border-transparent hover:bg-slate-800/40'
+                                  }`}
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`text-sm font-semibold truncate ${active ? 'text-emerald-300' : 'text-white'}`}>{s.name}</span>
+                                      {s.recentPr && <Trophy className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-label="New PR" />}
+                                    </div>
+                                    <div className="text-[11px] text-slate-500">
+                                      {change ? (
+                                        <span className={`font-semibold ${toneClass[change.tone]}`}>{change.text}</span>
+                                      ) : (
+                                        'Logged once'
+                                      )}
+                                      <span> · {shortDate(s.lastDate)}</span>
+                                    </div>
+                                  </div>
+                                  <span className="text-sm font-bold text-white shrink-0">{formatSet(s.best.topSet.weight, s.best.topSet.reps)}</span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
                     </div>
-                    <div className="mt-1 flex justify-between text-[11px] text-slate-400">
-                      <span>
-                        Best: {formatSet(s.best.topSet.weight, s.best.topSet.reps)} · {shortDate(s.best.date)}
-                      </span>
-                      <span>{s.bodyweightOnly ? 'bodyweight' : 'est. 1RM'}</span>
-                    </div>
-                    <div className="text-[11px] text-slate-500">
-                      {s.muscle || 'No group'} · {s.sessions.length} session{s.sessions.length === 1 ? '' : 's'}
-                      {!s.bodyweightOnly && ` · heaviest ${formatKg(s.heaviest)} kg`}
-                    </div>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
-        </div>
+                  );
+                })}
+              </div>
+            </section>
+          </div>
+        </>
       )}
 
       {/* Squad PR feed */}
-      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-        <h3 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
-          <Trophy className="w-5 h-5 text-amber-400" /> Squad PRs · last 30 days
+      <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-6">
+        <h3 className="text-lg font-bold text-white flex items-center gap-2">
+          <Trophy className="w-5 h-5 text-amber-400" /> Squad PRs
         </h3>
+        <p className="text-xs text-slate-500 mt-0.5">Everyone's new records in the last 30 days.</p>
         {recentPrs.length === 0 ? (
-          <p className="text-sm text-slate-500 mt-2">No new personal records yet. Log sets to start the race.</p>
+          <p className="text-sm text-slate-500 mt-3">No new personal records yet. Log sets to start the race.</p>
         ) : (
-          <ul className="mt-3 divide-y divide-slate-800">
-            {recentPrs.map(({ member: m, summary, session }) => (
-              <li key={`${m}-${summary.key}-${session.requestId}`} className="py-2 flex flex-wrap items-center justify-between gap-2 text-sm">
-                <span className="text-white">
-                  {avatars[m]} <span className="font-semibold">{m}</span>
-                  <span className="text-slate-400"> · {summary.name}</span>
-                </span>
-                <span className="text-slate-300">
-                  {formatSet(session.topSet.weight, session.topSet.reps)}
-                  <span className="text-slate-500"> · {shortDate(session.date)}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="mt-3 divide-y divide-slate-800">
+              {visiblePrs.map(({ member: m, summary, session }) => (
+                <li key={`${m}-${summary.key}-${session.requestId}`} className="py-2.5 flex items-center gap-3 text-sm">
+                  <span className="text-xl shrink-0" aria-hidden="true">{avatars[m]}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-white truncate"><span className="font-semibold">{m}</span> <span className="text-slate-400">· {summary.name}</span></div>
+                    <div className="text-[11px] text-slate-500">{shortDate(session.date)}</div>
+                  </div>
+                  <span className="font-semibold text-white shrink-0">{formatSet(session.topSet.weight, session.topSet.reps)}</span>
+                </li>
+              ))}
+            </ul>
+            {recentPrs.length > 4 && (
+              <button
+                type="button"
+                onClick={() => setShowAllPrs((v) => !v)}
+                className="mt-2 text-xs font-semibold text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1"
+              >
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAllPrs ? 'rotate-180' : ''}`} />
+                {showAllPrs ? 'Show fewer' : `Show all ${recentPrs.length}`}
+              </button>
+            )}
+          </>
         )}
       </section>
+
+      <p className="text-[11px] text-slate-600 px-1">
+        Estimated max = the most you could probably lift once, worked out from weight × (1 + reps ÷ 30). Used to compare sets with different reps.
+      </p>
     </div>
   );
 }

@@ -18,12 +18,19 @@ import {
   Sparkles,
   Trash2,
   PersonStanding,
+  Pencil,
+  Home,
+  ChevronDown as ChevronDownIcon,
+  Repeat,
 } from 'lucide-react';
 import BodyBalance from './BodyBalance';
 import ExerciseLogger from './ExerciseLogger';
 import ProgressView from './ProgressView';
 import StrengthSummary from './StrengthSummary';
-import { buildExercisePayload, summarizeSession, type DraftExercise, type SetRecord } from './exercises';
+import MemberPicker from './MemberPicker';
+import HomeView from './HomeView';
+import { clearDraft, draftHasContent, loadDraft, loadMe, saveDraft, saveMe } from './localPrefs';
+import { buildExercisePayload, newDraftExercise, summarizeSession, type DraftExercise, type SetRecord } from './exercises';
 
 const WEB_APP_URL =
   'https://script.google.com/macros/s/AKfycbxLmzZB2Wg95Lew6te5uXGwjNtyWuef3xjHPkqYBigvHo9mO5RU1zVQubGiT78mbMFejw/exec';
@@ -358,9 +365,20 @@ export default function App(): React.ReactElement {
   const [savingGoal, setSavingGoal] = useState(false);
   const [goalMessage, setGoalMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'leaderboard' | 'alltime' | 'balance' | 'progress' | 'reports' | 'goals' | 'log' | 'manage'>(
-    'leaderboard'
+  const [activeTab, setActiveTab] = useState<'home' | 'leaderboard' | 'alltime' | 'balance' | 'progress' | 'reports' | 'goals' | 'log' | 'manage'>(
+    'home'
   );
+
+  // "This is me": remembered on this device. null = not chosen yet.
+  const [me, setMe] = useState<string | null>(() => {
+    const saved = loadMe();
+    return saved && SQUAD_MEMBERS.includes(saved) ? saved : null;
+  });
+  const chooseMe = (member: string) => {
+    saveMe(member);
+    setMe(member);
+    setFormMember(member);
+  };
 
   const [timeFilter, setTimeFilter] = useState<'week' | 'alltime'>('week');
 
@@ -379,23 +397,42 @@ export default function App(): React.ReactElement {
   const [selectedMemberModal, setSelectedMemberModal] =
     useState<MemberStat | null>(null);
 
-  const [formMember, setFormMember] = useState(SQUAD_MEMBERS[0]);
+  // Restore an unsent draft (e.g. phone locked mid-workout) on first load.
+  const [initialDraft] = useState(() => loadDraft());
+  const [formMember, setFormMember] = useState(() => {
+    const d = initialDraft;
+    if (d && SQUAD_MEMBERS.includes(d.member)) return d.member;
+    const saved = loadMe();
+    return saved && SQUAD_MEMBERS.includes(saved) ? saved : SQUAD_MEMBERS[0];
+  });
 
   // Workout date defaults to today's date in India.
-  const [formDate, setFormDate] = useState(getTodayDate());
+  const [formDate, setFormDate] = useState(() => initialDraft?.date || getTodayDate());
 
-  const [formMuscles, setFormMuscles] = useState<string[]>([]);
+  const [formMuscles, setFormMuscles] = useState<string[]>(() => initialDraft?.muscles || []);
 
-  const [formNotes, setFormNotes] = useState('');
+  const [formNotes, setFormNotes] = useState(() => initialDraft?.notes || '');
+  const [draftRestored, setDraftRestored] = useState(() => !!initialDraft && draftHasContent(initialDraft));
+
+  // "Details" row (date + member) is collapsed once chosen; tap to expand.
+  const [logDetailsOpen, setLogDetailsOpen] = useState(false);
 
   // Optional sets / reps / weight for the workout being logged.
-  const [formExercises, setFormExercises] = useState<DraftExercise[]>([]);
+  const [formExercises, setFormExercises] = useState<DraftExercise[]>(() => initialDraft?.exercises || []);
+
+  // Keep the draft on this device while typing, so nothing is lost if the app closes.
+  useEffect(() => {
+    const draft = { member: formMember, date: formDate, muscles: formMuscles, exercises: formExercises, notes: formNotes };
+    if (draftHasContent(draft)) saveDraft(draft);
+    else clearDraft();
+  }, [formMember, formDate, formMuscles, formExercises, formNotes]);
 
   // All logged sets from the "Exercise Sets" sheet.
   const [setRecords, setSetRecords] = useState<SetRecord[]>([]);
   const [setsLoading, setSetsLoading] = useState(true);
 
   const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('Workout submitted successfully!');
   const [errorMessage, setErrorMessage] = useState('');
 
   // Fetch Google Sheets data.
@@ -850,7 +887,10 @@ export default function App(): React.ReactElement {
       setFormNotes('');
       setFormExercises([]);
       setFormDate(getTodayDate());
+      setDraftRestored(false);
+      clearDraft();
 
+      setToastMessage('Workout submitted successfully!');
       setShowToast(true);
       window.setTimeout(() => setShowToast(false), 3000);
 
@@ -869,10 +909,176 @@ export default function App(): React.ReactElement {
     }
   };
 
+  // Past workouts to start from: the most recent one of each type (same muscle
+  // groups), so on Pull day you can load your last Pull day, not yesterday's Legs.
+  const [pastPickerOpen, setPastPickerOpen] = useState(false);
+  const pastWorkouts = useMemo(() => {
+    const seen = new Set<string>();
+    return logs
+      .filter((l) => l.member === formMember && l.requestId && setsByWorkout.has(l.requestId))
+      .map((l) => ({
+        log: l,
+        date: normalizeDate(l.timestamp),
+        muscles: Array.from(new Set(l.muscles.map(normalizeMuscleGroup))),
+        exercises: Array.from(setsByWorkout.get(l.requestId!)!.keys()),
+      }))
+      .filter((w) => w.date)
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .filter((w) => {
+        const type = [...w.muscles].sort().join('|');
+        if (seen.has(type)) return false;
+        seen.add(type);
+        return true;
+      })
+      .slice(0, 6);
+  }, [logs, formMember, setsByWorkout]);
+
+  const loadPastWorkout = (w: (typeof pastWorkouts)[number]) => {
+    const byExercise = setsByWorkout.get(w.log.requestId!) || new Map<string, SetRecord[]>();
+    const exercises = Array.from(byExercise.entries()).map(([name, sets]) => {
+      const draft = newDraftExercise(name, sets[0]?.muscle || '');
+      draft.sets = [...sets].sort((a, b) => a.setNumber - b.setNumber).map((set) => ({ reps: String(set.reps), weight: String(set.weight) }));
+      return draft;
+    });
+    setFormMuscles(w.muscles);
+    setFormExercises(exercises);
+    setFormNotes('');
+    setFormDate(getTodayDate());
+    setDraftRestored(false);
+    setPastPickerOpen(false);
+    setToastMessage(`Loaded your ${w.muscles.join(' · ')} workout from ${formatDisplayDate(w.date)}. Update the weights and save.`);
+    setShowToast(true);
+    window.setTimeout(() => setShowToast(false), 3500);
+  };
+
+  const clearLogForm = () => {
+    setFormMuscles([]);
+    setFormExercises([]);
+    setFormNotes('');
+    setFormDate(getTodayDate());
+    setDraftRestored(false);
+    clearDraft();
+  };
+
+  const formSetCount = formExercises.reduce((n, ex) => n + ex.sets.filter((st) => st.reps.trim() || st.weight.trim()).length, 0);
+
   const toggleMuscle = (name: string) => {
     setFormMuscles((prev) =>
       prev.includes(name) ? prev.filter((m) => m !== name) : [...prev, name]
     );
+  };
+
+  // ---- Edit workout ----
+  const [editingLog, setEditingLog] = useState<LogEntry | null>(null);
+  const [editDate, setEditDate] = useState('');
+  const [editMuscles, setEditMuscles] = useState<string[]>([]);
+  const [editExercises, setEditExercises] = useState<DraftExercise[]>([]);
+  const [editNotes, setEditNotes] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState('');
+
+  const openEditWorkout = (log: LogEntry) => {
+    if (!log.requestId) {
+      alert('This workout has no Request ID and cannot be safely edited.');
+      return;
+    }
+    const exercises = Array.from(setsByWorkout.get(log.requestId)?.entries() || []).map(([name, sets]) => {
+      const draft = newDraftExercise(name, sets[0]?.muscle || '');
+      draft.sets = [...sets]
+        .sort((a, b) => a.setNumber - b.setNumber)
+        .map((set) => ({ reps: String(set.reps), weight: String(set.weight) }));
+      return draft;
+    });
+
+    setEditingLog(log);
+    setEditDate(normalizeDate(log.timestamp));
+    setEditMuscles(Array.from(new Set(log.muscles.map(normalizeMuscleGroup))));
+    setEditExercises(exercises);
+    setEditNotes(log.notes || '');
+    setEditError('');
+  };
+
+  const closeEditWorkout = () => {
+    if (savingEdit) return;
+    setEditingLog(null);
+  };
+
+  // Save the edit, then poll the sheet until it shows the new values.
+  const handleSaveEdit = async () => {
+    if (!editingLog?.requestId || savingEdit) return;
+    const requestId = editingLog.requestId;
+
+    if (!editDate) return setEditError('Please select the workout date.');
+    if (editDate > getTodayDate()) return setEditError('Workout date cannot be in the future.');
+
+    const exercisePayload = buildExercisePayload(editExercises);
+    if (exercisePayload.error !== undefined) return setEditError(exercisePayload.error);
+    const exercises = exercisePayload.exercises;
+
+    const muscles = Array.from(new Set([...editMuscles, ...exercises.map((ex) => ex.muscle)]));
+    if (muscles.length === 0) return setEditError('Select at least one muscle group or add an exercise.');
+
+    const notes = editNotes.trim();
+    const expectedSets = exercises
+      .flatMap((ex) => ex.sets.map((set, i) => `${ex.name.trim()}|${i + 1}|${set.reps}|${set.weight}`))
+      .sort()
+      .join(';');
+
+    setSavingEdit(true);
+    setEditError('');
+
+    try {
+      await fetch(WEB_APP_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'updateWorkout', requestId, date: editDate, notes, muscles, exercises }),
+      });
+
+      let confirmed = false;
+      for (let attempt = 0; attempt < 12 && !confirmed; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+        const separator = WEB_APP_URL.includes('?') ? '&' : '?';
+        const response = await fetch(
+          `${WEB_APP_URL}${separator}action=workout&requestId=${encodeURIComponent(requestId)}&t=${Date.now()}`,
+          { cache: 'no-store' }
+        );
+        if (!response.ok) continue;
+        const data = await response.json();
+        if (!data || data.error) {
+          // An older Apps Script without the "workout" action.
+          throw new Error('Editing needs the latest Apps Script. Paste the new Code.gs and deploy a new version.');
+        }
+        if (!data.workout) continue;
+
+        const savedSets = (Array.isArray(data.sets) ? data.sets : [])
+          .map((set: any) => `${String(set.exercise).trim()}|${Number(set.setNumber)}|${Number(set.reps)}|${Number(set.weight)}`)
+          .sort()
+          .join(';');
+        const savedMuscles = new Set<string>((data.workout.muscles || []).map((m: string) => String(m).trim()));
+
+        confirmed =
+          normalizeDate(String(data.workout.timestamp)) === editDate &&
+          String(data.workout.notes || '').trim() === notes &&
+          muscles.every((m) => savedMuscles.has(m)) &&
+          savedSets === expectedSets;
+      }
+
+      if (!confirmed) {
+        throw new Error('The edit was sent, but Google Sheets has not confirmed it yet. Refresh and check before editing again.');
+      }
+
+      await Promise.all([fetchLogs(), fetchSets()]);
+      setEditingLog(null);
+      setToastMessage('Workout updated.');
+      setShowToast(true);
+      window.setTimeout(() => setShowToast(false), 3000);
+    } catch (error) {
+      console.error('Workout edit failed:', error);
+      setEditError(error instanceof Error ? error.message : 'Unable to save the edit.');
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   // Delete a workout by its stable Request ID, then verify that it is gone.
@@ -953,6 +1159,7 @@ export default function App(): React.ReactElement {
       {/* MOBILE MENU BAR: always shown on phones instead of the full tab menu */}
       {(() => {
         const tabs = [
+          { key: 'home', label: 'Home', Icon: Home },
           { key: 'leaderboard', label: 'Leaderboard', Icon: Trophy },
           { key: 'alltime', label: 'All-Time', Icon: User },
           { key: 'balance', label: 'Body Balance', Icon: PersonStanding },
@@ -1055,6 +1262,18 @@ export default function App(): React.ReactElement {
         </div>
 
         <div className="flex items-center flex-wrap gap-3">
+          <button
+            onClick={() => setActiveTab('home')}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 ${
+              activeTab === 'home'
+                ? 'bg-emerald-500 text-slate-950'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            <Home className="w-4 h-4" />
+            Home
+          </button>
+
           <button
             onClick={() => setActiveTab('leaderboard')}
             className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
@@ -1165,12 +1384,15 @@ export default function App(): React.ReactElement {
         </div>
       </nav>
 
-      <main className="max-w-6xl mx-auto px-4 mt-6">
+      <main className="max-w-6xl mx-auto px-4 mt-6 text-left">
         {/* Toast */}
         {showToast && (
-          <div className="mb-4 p-4 bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 rounded-xl flex items-center gap-3">
-            <CheckCircle2 className="w-5 h-5" />
-            Workout submitted successfully!
+          <div
+            role="status"
+            className={`fixed left-1/2 -translate-x-1/2 z-[60] w-[calc(100%-2rem)] max-w-md p-4 bg-emerald-950/95 ${activeTab === 'log' ? 'bottom-24' : 'bottom-6'} border border-emerald-500/50 text-emerald-300 rounded-xl flex items-center gap-3 shadow-2xl shadow-black/50`}
+          >
+            <CheckCircle2 className="w-5 h-5 shrink-0" />
+            {toastMessage}
           </div>
         )}
 
@@ -1180,10 +1402,54 @@ export default function App(): React.ReactElement {
           </div>
         )}
 
+        {/* HOME */}
+        {activeTab === 'home' && (
+          me ? (
+            <HomeView
+              me={me}
+              logs={logs}
+              goals={goals}
+              sets={setRecords}
+              members={SQUAD_MEMBERS}
+              muscleGroups={MUSCLE_GROUPS}
+              avatars={MEMBER_AVATARS}
+              normalizeDate={normalizeDate}
+              normalizeMuscle={normalizeMuscleGroup}
+              today={getTodayDate()}
+              loading={loading}
+              onLog={() => { setFormMember(me); setActiveTab('log'); }}
+              onOpenBalance={() => setActiveTab('balance')}
+              onOpenProgress={() => setActiveTab('progress')}
+              onChangeMe={() => setMe(null)}
+            />
+          ) : (
+            <div className="max-w-xl mx-auto bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 text-center shadow-xl shadow-black/30">
+              <Dumbbell className="w-10 h-10 mx-auto text-emerald-400" />
+              <h2 className="text-2xl font-extrabold text-white mt-3">Who are you?</h2>
+              <p className="text-sm text-slate-400 mt-1 mb-5">
+                The app will open on your stats and log workouts as you. Saved on this device only; you can change it any time.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {SQUAD_MEMBERS.map((member) => (
+                  <button
+                    key={member}
+                    type="button"
+                    onClick={() => chooseMe(member)}
+                    className="p-4 rounded-xl font-bold text-base border bg-slate-950 border-slate-800 text-slate-200 hover:border-emerald-500 hover:bg-emerald-500/10 transition"
+                  >
+                    <span aria-hidden="true" className="text-2xl block mb-1">{MEMBER_AVATARS[member]}</span>
+                    {member}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )
+        )}
+
         {/* LEADERBOARD */}
         {activeTab === 'leaderboard' && (
           <div className="space-y-6">
-            <div className="flex flex-wrap justify-between items-center bg-slate-900 border border-slate-800 rounded-2xl p-4 gap-3">
+            <div className="flex flex-wrap justify-between items-center gap-3 px-1">
               <div>
                 <span className="text-slate-400 text-sm font-medium">
                   Leaderboard Timeframe
@@ -1242,19 +1508,19 @@ export default function App(): React.ReactElement {
             )}
 
             {filteredLogs.length > 0 && (
-              <div className="bg-gradient-to-r from-emerald-950 via-slate-900 to-slate-900 border border-emerald-500/30 rounded-2xl p-6 shadow-xl">
+              <div className="relative overflow-hidden bg-gradient-to-br from-emerald-900/60 via-slate-900 to-slate-900 border border-emerald-500/40 rounded-2xl p-6 shadow-xl shadow-emerald-950/40">
+                <Trophy className="absolute -right-4 -top-4 w-32 h-32 text-amber-400/10" aria-hidden="true" />
                 <span className="text-xs font-semibold text-emerald-400 tracking-widest uppercase">
                   Current Leader
                 </span>
 
-                <h2 className="text-3xl font-extrabold text-white mt-2 flex items-center gap-3">
-                  {sortedLeaderboard[0].avatar}
+                <h2 className="text-3xl sm:text-4xl font-extrabold text-white mt-2 flex items-center gap-3">
+                  <span aria-hidden="true">{sortedLeaderboard[0].avatar}</span>
                   {sortedLeaderboard[0].member}
-
                   <Trophy className="w-7 h-7 text-amber-400 fill-amber-400" />
                 </h2>
 
-                <p className="text-slate-400 text-sm mt-2">
+                <p className="text-slate-300 text-sm mt-2">
                   {timeFilter === 'alltime' ? (
                     <>
                       {sortedLeaderboard[0].qualifyingWeeks || 0} Qualifying Weeks •{' '}
@@ -1271,9 +1537,9 @@ export default function App(): React.ReactElement {
               </div>
             )}
 
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-              <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                <Trophy className="w-5 h-5 text-amber-400" />
+            <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-6">
+              <h3 className="text-base font-bold text-slate-200 mb-4 flex items-center gap-2">
+                <Trophy className="w-4 h-4 text-slate-400" />
                 Squad Leaderboard
               </h3>
 
@@ -1342,10 +1608,10 @@ export default function App(): React.ReactElement {
 
         {/* ALL-TIME DASHBOARDS */}
         {activeTab === 'alltime' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-            <h2 className="text-xl font-bold text-white mb-2 flex items-center gap-2">
-              <User className="w-6 h-6 text-emerald-400" />
-              All-Time Individual Person Dashboards
+          <div>
+            <h2 className="text-2xl md:text-3xl font-extrabold text-white mb-1 flex items-center gap-2">
+              <User className="w-7 h-7 text-emerald-400" />
+              All-Time Dashboards
             </h2>
 
             <p className="text-slate-400 text-sm mb-6">
@@ -1356,7 +1622,7 @@ export default function App(): React.ReactElement {
               {allTimeMemberStats.map((stat) => (
                 <div
                   key={stat.member}
-                  className="bg-slate-950 border border-slate-800 rounded-2xl p-6 hover:border-emerald-500/40 transition"
+                  className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 sm:p-6 hover:border-emerald-500/40 transition"
                 >
                   <div className="flex items-center justify-between mb-4 pb-4 border-b border-slate-800">
                     <div className="flex items-center gap-3">
@@ -1548,39 +1814,26 @@ export default function App(): React.ReactElement {
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                    <span className="text-xs text-slate-400">Reports generated</span>
-                    <div className="text-2xl font-extrabold text-white mt-1">{successfulReportsCount}<span className="text-sm text-slate-500 font-medium"> / {SQUAD_MEMBERS.length}</span></div>
-                  </div>
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-                    <span className="text-xs text-slate-400">Members pending</span>
-                    <div className="text-2xl font-extrabold text-amber-400 mt-1">{Math.max(0, SQUAD_MEMBERS.length - successfulReportsCount)}</div>
-                  </div>
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 col-span-2">
-                    <span className="text-xs text-slate-400">Report period</span>
-                    <div className="text-lg font-bold text-white mt-1">{formatReportWeekLabel(selectedReportWeek, selectedWeekReports[0]?.weekEnd || '')}</div>
-                  </div>
-                </div>
+                <p className="text-sm text-slate-400 px-1">
+                  <span className="font-semibold text-white">{successfulReportsCount}</span> of {SQUAD_MEMBERS.length} reports ready for{' '}
+                  <span className="font-semibold text-white">{formatReportWeekLabel(selectedReportWeek, selectedWeekReports[0]?.weekEnd || '')}</span>
+                  {successfulReportsCount < SQUAD_MEMBERS.length && (
+                    <span className="text-amber-400"> · {SQUAD_MEMBERS.length - successfulReportsCount} pending</span>
+                  )}
+                </p>
 
-                <div className="flex gap-2 overflow-x-auto pb-2">
-                  {SQUAD_MEMBERS.map((member) => {
+                <MemberPicker
+                  members={SQUAD_MEMBERS}
+                  avatars={MEMBER_AVATARS}
+                  value={selectedReportMember}
+                  onChange={setSelectedReportMember}
+                  status={(member) => {
                     const record = selectedWeekReports.find((item) => item.member === member);
-                    const ready = record?.status === 'SUCCESS' && !!record.report;
-                    return (
-                      <button
-                        key={member}
-                        onClick={() => setSelectedReportMember(member)}
-                        className={`shrink-0 rounded-xl border px-4 py-3 text-left transition ${selectedReportMember === member ? 'bg-emerald-500/15 border-emerald-500 text-white' : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-600'}`}
-                      >
-                        <div className="font-semibold text-sm">{MEMBER_AVATARS[member]} {member}</div>
-                        <div className={`text-[11px] mt-1 ${ready ? 'text-emerald-400' : record?.status === 'ERROR' ? 'text-red-400' : 'text-amber-400'}`}>
-                          {ready ? 'Report ready' : record?.status === 'ERROR' ? 'Generation failed' : 'Pending'}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+                    if (record?.status === 'SUCCESS' && record.report) return { label: 'Ready', tone: 'good' };
+                    if (record?.status === 'ERROR') return { label: 'Failed', tone: 'bad' };
+                    return { label: 'Pending', tone: 'warn' };
+                  }}
+                />
 
                 {(() => {
                   // Strength numbers for this report week, calculated from logged sets.
@@ -1614,7 +1867,7 @@ export default function App(): React.ReactElement {
                       const list = (items?: string[]) => (items || []).filter(Boolean);
                       return (
                         <>
-                          <div className="bg-gradient-to-br from-emerald-950/70 to-slate-900 border border-emerald-500/30 rounded-2xl p-6">
+                          <div className="bg-gradient-to-br from-emerald-900/60 via-slate-900 to-slate-900 border border-emerald-500/40 rounded-2xl p-6 shadow-xl shadow-emerald-950/40">
                             <div className="flex flex-wrap justify-between items-start gap-3">
                               <div>
                                 <div className="text-xs font-bold uppercase tracking-widest text-emerald-400">{MEMBER_AVATARS[selectedReportMember]} {selectedReportMember} · Weekly assessment</div>
@@ -1627,7 +1880,7 @@ export default function App(): React.ReactElement {
                           </div>
 
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                            <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5">
                               <div className="flex items-center gap-2 mb-4"><Target className="w-5 h-5 text-cyan-400" /><h4 className="font-bold text-white">Goal alignment</h4></div>
                               <div className="flex items-end gap-2">
                                 <span className="text-4xl font-extrabold text-cyan-300">{alignment?.score ?? '—'}</span>
@@ -1639,7 +1892,7 @@ export default function App(): React.ReactElement {
                               {list(alignment?.gaps).length > 0 && <div className="mt-4"><p className="text-xs uppercase font-bold text-amber-400 mb-2">Gaps</p><ul className="space-y-2">{list(alignment?.gaps).map((item, i) => <li key={i} className="text-sm text-slate-300 flex gap-2"><AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />{item}</li>)}</ul></div>}
                             </section>
 
-                            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                            <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5">
                               <div className="flex items-center gap-2 mb-4"><TrendingUp className="w-5 h-5 text-emerald-400" /><h4 className="font-bold text-white">Consistency</h4></div>
                               <div className="flex items-baseline gap-2"><span className="text-4xl font-extrabold text-emerald-300">{consistency?.workouts ?? '—'}</span><span className="text-sm text-slate-400">/ {consistency?.target ?? 3} workouts</span></div>
                               <span className={`inline-flex mt-3 rounded-full px-3 py-1 text-xs font-semibold ${consistency?.status === 'On track' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>{consistency?.status || 'Status unavailable'}</span>
@@ -1649,7 +1902,7 @@ export default function App(): React.ReactElement {
 
                           {strength}
 
-                          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                          <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5">
                             <h4 className="font-bold text-white mb-4">Training analysis</h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                               {[['What went well', training?.whatWentWell, 'text-emerald-400'], ['Concerns', training?.concerns, 'text-amber-400'], ['Muscle-group analysis', training?.muscleGroupAnalysis, 'text-cyan-400'], ['Exercise observations', training?.exerciseObservations, 'text-violet-400']].map(([title, items, color]: any) => (
@@ -1659,7 +1912,7 @@ export default function App(): React.ReactElement {
                             {list(training?.dataLimitations).length > 0 && <div className="mt-5 border-t border-slate-800 pt-4"><p className="text-xs uppercase font-bold text-slate-500 mb-2">Data limitations</p>{list(training?.dataLimitations).map((item, i) => <p key={i} className="text-xs text-slate-400 mt-1">• {item}</p>)}</div>}
                           </section>
 
-                          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                          <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5">
                             <h4 className="font-bold text-white mb-4">Progress & trends</h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                               <div><h5 className="text-xs uppercase font-bold text-cyan-400 mb-2">Week-on-week</h5><p className="text-sm text-slate-300 leading-relaxed">{trends?.weeklyComparison || 'Not enough data for comparison.'}</p></div>
@@ -1669,7 +1922,7 @@ export default function App(): React.ReactElement {
                             </div>
                           </section>
 
-                          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                          <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5">
                             <h4 className="font-bold text-white mb-4">Recommendations</h4>
                             <div className="space-y-3">
                               {(report.recommendations || []).length ? report.recommendations!.map((item, i) => (
@@ -1699,11 +1952,11 @@ export default function App(): React.ReactElement {
         {/* MEMBER GOALS */}
         {activeTab === 'goals' && (
           <div className="space-y-6">
-            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
                 <div>
-                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                    <Target className="w-6 h-6 text-emerald-400" />
+                  <h2 className="text-2xl md:text-3xl font-extrabold text-white flex items-center gap-2">
+                    <Target className="w-7 h-7 text-emerald-400" />
                     Member Goals
                   </h2>
                   <p className="text-sm text-slate-400 mt-1">
@@ -1712,28 +1965,19 @@ export default function App(): React.ReactElement {
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-2 mb-6">
-                {SQUAD_MEMBERS.map((member) => {
-                  const hasGoal = !!goals.find((g) => g.member === member)?.primaryGoal;
-                  return (
-                    <button
-                      key={member}
-                      type="button"
-                      onClick={() => selectGoalMember(member)}
-                      disabled={savingGoal}
-                      className={`p-3 rounded-xl font-bold text-sm text-center border transition disabled:opacity-60 ${
-                        goalMember === member
-                          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
-                      }`}
-                    >
-                      {MEMBER_AVATARS[member]} {member}
-                      <span className={`block text-[10px] font-semibold mt-1 ${hasGoal ? 'text-emerald-500' : 'text-slate-600'}`}>
-                        {hasGoal ? 'Goal set' : 'No goal'}
-                      </span>
-                    </button>
-                  );
-                })}
+              <div className="mb-6">
+                <MemberPicker
+                  members={SQUAD_MEMBERS}
+                  avatars={MEMBER_AVATARS}
+                  value={goalMember}
+                  onChange={selectGoalMember}
+                  disabled={savingGoal}
+                  status={(member) =>
+                    goals.find((g) => g.member === member)?.primaryGoal
+                      ? { label: 'Goal set', tone: 'good' }
+                      : { label: 'No goal', tone: 'muted' }
+                  }
+                />
               </div>
 
               {goalsLoading && goals.length === 0 ? (
@@ -1857,8 +2101,8 @@ export default function App(): React.ReactElement {
               )}
             </section>
 
-            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-              <h3 className="text-lg font-bold text-white mb-4">Squad Goals Overview</h3>
+            <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-6">
+              <h3 className="text-base font-bold text-slate-200 mb-4">Squad Goals Overview</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {SQUAD_MEMBERS.map((member) => {
                   const goal = goals.find((g) => g.member === member);
@@ -1890,11 +2134,14 @@ export default function App(): React.ReactElement {
 
         {/* MANAGE WORKOUTS */}
         {activeTab === 'manage' && (
-          <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+          <section>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
               <div>
-                <h2 className="text-xl font-bold text-white">Manage Workouts</h2>
-                <p className="text-sm text-slate-400 mt-1">Review and delete any squad member's workout entry.</p>
+                <h2 className="text-2xl md:text-3xl font-extrabold text-white flex items-center gap-2">
+                  <Trash2 className="w-7 h-7 text-emerald-400" />
+                  Manage Workouts
+                </h2>
+                <p className="text-sm text-slate-400 mt-1">Review, edit or delete any squad member's workout entry.</p>
               </div>
               <span className="text-xs text-slate-500">{logs.length} total entries</span>
             </div>
@@ -1924,17 +2171,28 @@ export default function App(): React.ReactElement {
                         </ul>
                       )}
                       {log.notes && <p className="text-sm text-slate-400 mt-1 break-words">{log.notes}</p>}
-                      {!log.requestId && <p className="text-xs text-amber-400 mt-1">Missing Request ID — cannot safely delete this entry.</p>}
+                      {!log.requestId && <p className="text-xs text-amber-400 mt-1">Missing Request ID — cannot safely edit or delete this entry.</p>}
                     </div>
-                    <button
-                      onClick={() => handleDeleteWorkout(log)}
-                      disabled={!log.requestId || deletingRequestId !== null}
-                      className="shrink-0 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
-                      title="Delete workout"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      {deletingRequestId === log.requestId ? 'Deleting...' : 'Delete'}
-                    </button>
+                    <div className="shrink-0 flex gap-2">
+                      <button
+                        onClick={() => openEditWorkout(log)}
+                        disabled={!log.requestId || deletingRequestId !== null || savingEdit}
+                        className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-slate-700 text-slate-200 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="Edit workout"
+                      >
+                        <Pencil className="w-4 h-4" />
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteWorkout(log)}
+                        disabled={!log.requestId || deletingRequestId !== null || savingEdit}
+                        className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="Delete workout"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        {deletingRequestId === log.requestId ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1944,95 +2202,132 @@ export default function App(): React.ReactElement {
 
         {/* LOG WORKOUT */}
         {activeTab === 'log' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-2xl mx-auto">
-            <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
-              <PlusCircle className="w-6 h-6 text-emerald-400" />
-              Log Daily Workout
-            </h2>
-
-            <form onSubmit={handleLogSubmit} className="space-y-6">
-              <div>
-                <label
-                  htmlFor="workout-date"
-                  className="block text-sm font-semibold text-slate-300 mb-2"
+          <div className="max-w-2xl mx-auto pb-28">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h2 className="text-2xl md:text-3xl font-extrabold text-white flex items-center gap-2">
+                <PlusCircle className="w-7 h-7 text-emerald-400" />
+                Log Workout
+              </h2>
+              {pastWorkouts.length > 0 && !submitting && (
+                <button
+                  type="button"
+                  onClick={() => setPastPickerOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-emerald-300 hover:bg-slate-700"
                 >
-                  Workout Date
-                </label>
-                <input
-                  id="workout-date"
-                  type="date"
-                  value={formDate}
-                  max={getTodayDate()}
-                  onChange={(e) => setFormDate(e.target.value)}
-                  required
-                  disabled={submitting}
-                  className="w-full sm:w-64 bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500 [color-scheme:dark]"
-                />
-                <p className="text-xs text-slate-500 mt-2">
-                  Defaults to today. You can select an earlier date to log a past workout.
-                </p>
+                  <Repeat className="w-3.5 h-3.5" /> Start from past
+                </button>
+              )}
+            </div>
+
+            {draftRestored && (
+              <div className="mb-4 p-3 rounded-xl border border-sky-500/30 bg-sky-500/10 text-sm text-sky-200 flex items-center justify-between gap-3">
+                <span>Picked up where you left off. Your unsaved workout was restored.</span>
+                <button type="button" onClick={clearLogForm} className="shrink-0 text-xs font-semibold text-sky-300 hover:text-white">
+                  Start fresh
+                </button>
               </div>
+            )}
 
-              <div>
-                <label className="block text-sm font-semibold text-slate-300 mb-2">
-                  Select Squad Member
-                </label>
-
-                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
-                  {SQUAD_MEMBERS.map((member) => (
-                    <button
-                      key={member}
-                      type="button"
-                      onClick={() => setFormMember(member)}
-                      className={`p-3 rounded-xl font-bold text-sm text-center border transition ${
-                        formMember === member
-                          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
-                      }`}
-                    >
-                      {MEMBER_AVATARS[member]} {member}
+            {pastPickerOpen && (
+              <div
+                className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4"
+                onClick={() => setPastPickerOpen(false)}
+              >
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="past-picker-title"
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[80vh] flex flex-col text-left"
+                >
+                  <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
+                    <div>
+                      <h3 id="past-picker-title" className="text-lg font-bold text-white">Start from a past workout</h3>
+                      <p className="text-xs text-slate-500">Your latest session of each type. Weights are filled in; update them as you go.</p>
+                    </div>
+                    <button type="button" onClick={() => setPastPickerOpen(false)} aria-label="Close" className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
+                      <X className="w-5 h-5" />
                     </button>
-                  ))}
+                  </div>
+                  <ul className="overflow-y-auto divide-y divide-slate-800">
+                    {pastWorkouts.map((w) => (
+                      <li key={w.log.requestId}>
+                        <button
+                          type="button"
+                          onClick={() => loadPastWorkout(w)}
+                          className="w-full text-left px-5 py-3.5 hover:bg-slate-800/60 active:bg-slate-800"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-semibold text-emerald-300">{w.muscles.join(' · ')}</span>
+                            <span className="text-xs text-slate-500 shrink-0">{formatDisplayDate(w.date)}</span>
+                          </div>
+                          <div className="text-xs text-slate-400 mt-0.5 line-clamp-2">
+                            {w.exercises.join(', ')}
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {formExercises.length > 0 && (
+                    <p className="px-5 py-3 text-[11px] text-amber-300/80 border-t border-slate-800">
+                      Loading a workout replaces what you've entered so far.
+                    </p>
+                  )}
                 </div>
               </div>
+            )}
 
-              <div>
-                <label className="block text-sm font-semibold text-slate-300 mb-2">
-                  Targeted Muscle Groups ({formMuscles.length}/8)
-                </label>
-                <p className="text-xs text-slate-500 -mt-1 mb-2">
-                  Ticked automatically for exercises you add below. Tick Cardio or others here.
-                </p>
-
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                  {MUSCLE_GROUPS.map((mg) => {
-                    const selected = formMuscles.includes(mg.name);
-
-                    return (
-                      <button
-                        key={mg.id}
-                        type="button"
-                        onClick={() => toggleMuscle(mg.name)}
-                        className={`p-3 rounded-xl text-left text-sm font-medium border flex justify-between items-center transition ${
-                          selected
-                            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                        }`}
-                      >
-                        <span>{mg.name}</span>
-
-                        {selected && (
-                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+            <form id="log-form" onSubmit={handleLogSubmit} className="space-y-5">
+              {/* Date + member: one line, expands on tap */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setLogDetailsOpen((o) => !o)}
+                  aria-expanded={logDetailsOpen}
+                  className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left"
+                >
+                  <span className="text-sm text-slate-200">
+                    <span className="font-semibold text-white">{formDate === getTodayDate() ? 'Today' : formatDisplayDate(formDate)}</span>
+                    <span className="text-slate-500"> · </span>
+                    <span aria-hidden="true">{MEMBER_AVATARS[formMember]}</span> <span className="font-semibold text-white">{formMember}</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                    Change <ChevronDownIcon className={`w-4 h-4 transition-transform ${logDetailsOpen ? 'rotate-180' : ''}`} />
+                  </span>
+                </button>
+                {logDetailsOpen && (
+                  <div className="px-4 pb-4 pt-1 space-y-4 border-t border-slate-800">
+                    <div>
+                      <label htmlFor="workout-date" className="block text-sm font-semibold text-slate-300 mb-2">Workout Date</label>
+                      <input
+                        id="workout-date"
+                        type="date"
+                        value={formDate}
+                        max={getTodayDate()}
+                        onChange={(e) => setFormDate(e.target.value)}
+                        required
+                        disabled={submitting}
+                        className="w-full sm:w-64 bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500 [color-scheme:dark]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-300 mb-2">Squad Member</label>
+                      <MemberPicker
+                        members={SQUAD_MEMBERS}
+                        avatars={MEMBER_AVATARS}
+                        value={formMember}
+                        onChange={setFormMember}
+                        disabled={submitting}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div>
+              {/* Exercises first: the part you actually fill in at the gym */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl shadow-black/30">
                 <label className="block text-sm font-semibold text-slate-300 mb-2">
-                  Exercises, Sets &amp; Weight (Optional)
+                  Exercises, Sets &amp; Weight
                 </label>
                 <ExerciseLogger
                   value={formExercises}
@@ -2049,31 +2344,207 @@ export default function App(): React.ReactElement {
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-semibold text-slate-300 mb-2">
+              <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
+                <label className="block text-sm font-semibold text-slate-300 mb-1">
+                  Muscle Groups ({formMuscles.length}/8)
+                </label>
+                <p className="text-xs text-slate-500 mb-3">
+                  Ticked automatically from your exercises. Tick Cardio or others here.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {MUSCLE_GROUPS.map((mg) => {
+                    const selected = formMuscles.includes(mg.name);
+                    return (
+                      <button
+                        key={mg.id}
+                        type="button"
+                        onClick={() => toggleMuscle(mg.name)}
+                        disabled={submitting}
+                        className={`px-3 py-2 rounded-full text-sm font-medium border inline-flex items-center gap-1.5 transition ${
+                          selected
+                            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        {selected && <CheckCircle2 className="w-3.5 h-3.5" />}
+                        {mg.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
+                <label htmlFor="log-notes" className="block text-sm font-semibold text-slate-300 mb-2">
                   Notes (Optional)
                 </label>
-
                 <textarea
-                  rows={3}
+                  id="log-notes"
+                  rows={2}
                   value={formNotes}
                   onChange={(e) => setFormNotes(e.target.value)}
+                  disabled={submitting}
                   placeholder="e.g. Felt strong, short on time, used the Smith machine..."
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500"
                 />
               </div>
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-lg rounded-xl transition disabled:opacity-50"
-              >
-                {submitting ? 'Saving...' : 'Submit Workout Log'}
-              </button>
             </form>
+
+            {/* Sticky save bar: always reachable, never scroll to save */}
+            <div className="fixed bottom-0 inset-x-0 z-40 border-t border-slate-800 bg-slate-950/90 backdrop-blur px-4 py-3 [padding-bottom:max(0.75rem,env(safe-area-inset-bottom))]">
+              <div className="max-w-2xl mx-auto flex items-center gap-3">
+                <div className="flex-1 min-w-0 text-xs text-slate-400">
+                  <div className="font-semibold text-white truncate">
+                    {formExercises.length === 0 && formMuscles.length === 0
+                      ? 'Nothing added yet'
+                      : `${formExercises.length} exercise${formExercises.length === 1 ? '' : 's'} · ${formSetCount} set${formSetCount === 1 ? '' : 's'}`}
+                  </div>
+                  <div className="truncate">{formMuscles.length ? formMuscles.join(' · ') : 'Add an exercise or tick a muscle group'}</div>
+                </div>
+                <button
+                  type="submit"
+                  form="log-form"
+                  disabled={submitting}
+                  className="shrink-0 px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl transition disabled:opacity-50"
+                >
+                  {submitting ? 'Saving…' : 'Save workout'}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </main>
+
+      {/* EDIT WORKOUT MODAL */}
+      {editingLog && (
+        <div
+          className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4"
+          onClick={closeEditWorkout}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-workout-title"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl text-left"
+          >
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-800">
+              <div>
+                <h2 id="edit-workout-title" className="text-lg font-bold text-white flex items-center gap-2">
+                  <Pencil className="w-5 h-5 text-emerald-400" /> Edit workout
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {MEMBER_AVATARS[editingLog.member] || '🏋️'} {editingLog.member} · originally {formatDisplayDate(normalizeDate(editingLog.timestamp))}
+                </p>
+              </div>
+              <button
+                onClick={closeEditWorkout}
+                disabled={savingEdit}
+                aria-label="Close"
+                className="text-slate-400 hover:text-white bg-slate-800/50 p-2 rounded-lg disabled:opacity-40"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-5 py-4 space-y-5">
+              <div>
+                <label htmlFor="edit-date" className="block text-sm font-semibold text-slate-300 mb-2">Workout Date</label>
+                <input
+                  id="edit-date"
+                  type="date"
+                  value={editDate}
+                  max={getTodayDate()}
+                  onChange={(e) => setEditDate(e.target.value)}
+                  disabled={savingEdit}
+                  className="w-full sm:w-64 bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500 [color-scheme:dark]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-300 mb-2">Muscle Groups ({editMuscles.length}/8)</label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {MUSCLE_GROUPS.map((mg) => {
+                    const selected = editMuscles.includes(mg.name);
+                    return (
+                      <button
+                        key={mg.id}
+                        type="button"
+                        disabled={savingEdit}
+                        onClick={() =>
+                          setEditMuscles((prev) => (prev.includes(mg.name) ? prev.filter((m) => m !== mg.name) : [...prev, mg.name]))
+                        }
+                        className={`p-2.5 rounded-xl text-left text-sm font-medium border flex justify-between items-center transition ${
+                          selected
+                            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <span>{mg.name}</span>
+                        {selected && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-300 mb-2">Exercises, Sets &amp; Weight</label>
+                <ExerciseLogger
+                  value={editExercises}
+                  onChange={(next) => {
+                    setEditExercises(next);
+                    const added = next.map((ex) => ex.muscle).filter(Boolean);
+                    setEditMuscles((prev) => Array.from(new Set([...prev, ...added])));
+                  }}
+                  member={editingLog.member}
+                  history={setRecords.filter((set) => set.requestId !== editingLog.requestId)}
+                  muscleGroups={MUSCLE_GROUPS.filter((mg) => mg.name !== 'Cardio').map((mg) => mg.name)}
+                  disabled={savingEdit}
+                />
+              </div>
+
+              <div>
+                <label htmlFor="edit-notes" className="block text-sm font-semibold text-slate-300 mb-2">Notes</label>
+                <textarea
+                  id="edit-notes"
+                  rows={3}
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  disabled={savingEdit}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              {editError && (
+                <div className="p-3 rounded-xl text-sm border bg-red-500/10 border-red-500/30 text-red-300 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  {editError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 px-5 py-4 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={closeEditWorkout}
+                disabled={savingEdit}
+                className="flex-1 sm:flex-none px-5 py-3 rounded-xl bg-slate-800 text-slate-300 font-semibold hover:bg-slate-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEdit}
+                disabled={savingEdit}
+                className="flex-1 px-5 py-3 rounded-xl bg-emerald-500 text-slate-950 font-bold hover:bg-emerald-400 disabled:opacity-50"
+              >
+                {savingEdit ? 'Saving to Google Sheets...' : 'Save changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MEMBER DETAIL MODAL */}
       {selectedMemberModal && (
