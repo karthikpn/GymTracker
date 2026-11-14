@@ -29,12 +29,13 @@ interface BodyBalanceProps {
   today: string;
 }
 
-type WindowKey = '2w' | '4w' | '8w' | 'all';
+type WindowKey = 'week' | '2w' | '4w' | 'all';
 
+// 'week' = the current Monday–Sunday week (same as the Leaderboard).
 const WINDOWS: { key: WindowKey; label: string; days: number | null }[] = [
+  { key: 'week', label: 'This week', days: null },
   { key: '2w', label: '2 weeks', days: 14 },
   { key: '4w', label: '4 weeks', days: 28 },
-  { key: '8w', label: '8 weeks', days: 56 },
   { key: 'all', label: 'All time', days: null },
 ];
 
@@ -56,24 +57,19 @@ interface GroupBalance {
 /* Scales                                                              */
 /* ------------------------------------------------------------------ */
 
-// Sequential single-hue scale (emerald), dark -> light on the dark surface.
-const SCALE = [
-  { min: 0, max: 0, fill: '#1e293b', label: 'Not hit' },
-  { min: 0.0001, max: 0.5, fill: '#065f46', label: '< 50%' },
-  { min: 0.5, max: 1, fill: '#059669', label: '50–99%' },
-  { min: 1, max: 1.5, fill: '#34d399', label: '100–149%' },
-  { min: 1.5, max: Infinity, fill: '#a7f3d0', label: '150%+' },
-];
+// Four clear states, used on the body map, the list, the grid and the legend.
+// Each always appears with a text label or icon, never colour alone.
+const STATUSES = [
+  { key: 'none', label: 'Not trained', fill: '#dc2626', chip: 'bg-red-500/15 text-red-300 border-red-500/30', cell: 'bg-red-500/15 text-red-300', Icon: XCircle },
+  { key: 'low', label: 'Under half', fill: '#d97706', chip: 'bg-amber-500/15 text-amber-300 border-amber-500/30', cell: 'bg-amber-500/20 text-amber-200', Icon: AlertTriangle },
+  { key: 'almost', label: 'Almost', fill: '#0284c7', chip: 'bg-sky-500/15 text-sky-300 border-sky-500/30', cell: 'bg-sky-500/20 text-sky-200', Icon: Activity },
+  { key: 'done', label: 'On track', fill: '#059669', chip: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30', cell: 'bg-emerald-500/30 text-emerald-100', Icon: CheckCircle },
+] as const;
 
-const fillFor = (ratio: number) =>
-  ratio <= 0 ? SCALE[0].fill : (SCALE.find((s, i) => i > 0 && ratio < s.max) || SCALE[SCALE.length - 1]).fill;
+const statusFor = (ratio: number) =>
+  ratio <= 0 ? STATUSES[0] : ratio < 0.5 ? STATUSES[1] : ratio < 1 ? STATUSES[2] : STATUSES[3];
 
-const statusFor = (ratio: number) => {
-  if (ratio <= 0) return { label: 'Neglected', className: 'bg-red-500/15 text-red-300', Icon: XCircle };
-  if (ratio < 0.5) return { label: 'Lacking', className: 'bg-amber-500/15 text-amber-300', Icon: AlertTriangle };
-  if (ratio < 1) return { label: 'Almost', className: 'bg-sky-500/15 text-sky-300', Icon: Activity };
-  return { label: 'On track', className: 'bg-emerald-500/15 text-emerald-300', Icon: CheckCircle };
-};
+const fillFor = (ratio: number) => statusFor(ratio).fill;
 
 const daysBetween = (from: string, to: string) => {
   const a = Date.UTC(+from.slice(0, 4), +from.slice(5, 7) - 1, +from.slice(8, 10));
@@ -85,6 +81,12 @@ const addDays = (date: string, days: number) => {
   const d = new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)));
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+};
+
+const mondayOf = (date: string) => {
+  const d = new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)));
+  const daysSinceMonday = (d.getUTCDay() + 6) % 7;
+  return addDays(date, -daysSinceMonday);
 };
 
 const formatDaysSince = (days: number | null) =>
@@ -108,12 +110,18 @@ const computeBalance = (
 
   const windowDef = WINDOWS.find((w) => w.key === windowKey)!;
   let start: string;
-  if (windowDef.days !== null) {
+  let weeks: number;
+  if (windowKey === 'week') {
+    // Monday of this week; targets are one full week's worth.
+    start = mondayOf(today);
+    weeks = 1;
+  } else if (windowDef.days !== null) {
     start = addDays(today, -(windowDef.days - 1));
+    weeks = Math.max(1, (daysBetween(start, today) + 1) / 7);
   } else {
     start = memberLogs.reduce((min, log) => (log.date < min ? log.date : min), today);
+    weeks = Math.max(1, (daysBetween(start, today) + 1) / 7);
   }
-  const weeks = Math.max(1, (daysBetween(start, today) + 1) / 7);
 
   const focusText = (goals.find((g) => g.member === member)?.focusAreas || '').toLowerCase();
   const focusSet = new Set(
@@ -186,19 +194,15 @@ function BodyFigure({ title, side, byGroup, active, onHover }: FigureProps) {
   const cx = side === 'front' ? 362 : 1086;
   const glowId = `glow-${side}`;
   const spotId = `spot-${side}`;
-  const hatchId = `hatch-${side}`;
 
   return (
     <figure className="flex flex-col items-center">
-      <svg viewBox={viewBox} className="w-full max-w-[280px]" role="img" aria-label={`${title} body view`}>
+      <svg viewBox={viewBox} className="w-full max-w-[200px] sm:max-w-[280px]" role="img" aria-label={`${title} body view`}>
         <defs>
           <radialGradient id={spotId} cx="50%" cy="40%" r="60%">
             <stop offset="0%" stopColor="#1e293b" stopOpacity="0.9" />
             <stop offset="100%" stopColor="#0f172a" stopOpacity="0" />
           </radialGradient>
-          <pattern id={hatchId} width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <line x1="0" y1="0" x2="0" y2="14" stroke="#fbbf24" strokeWidth="4" strokeOpacity="0.75" />
-          </pattern>
           <filter id={glowId} x="-20%" y="-20%" width="140%" height="140%">
             <feGaussianBlur stdDeviation="6" result="blur" />
             <feMerge>
@@ -222,7 +226,6 @@ function BodyFigure({ title, side, byGroup, active, onHover }: FigureProps) {
             ));
           }
 
-          const lacking = balance.ratio < 0.5;
           const isActive = active === group;
           const dim = active !== null && !isActive;
           return (
@@ -246,7 +249,6 @@ function BodyFigure({ title, side, byGroup, active, onHover }: FigureProps) {
                     strokeLinejoin="round"
                     vectorEffect="non-scaling-stroke"
                   />
-                  {lacking && <path d={d} fill={`url(#${hatchId})`} pointerEvents="none" />}
                 </g>
               ))}
             </g>
@@ -269,7 +271,7 @@ function BodyFigure({ title, side, byGroup, active, onHover }: FigureProps) {
 export default function BodyBalance(props: BodyBalanceProps) {
   const { members, muscleGroups, avatars } = props;
   const [member, setMember] = useState(members[0]);
-  const [windowKey, setWindowKey] = useState<WindowKey>('4w');
+  const [windowKey, setWindowKey] = useState<WindowKey>('week');
   const [hover, setHover] = useState<{ group: string; x: number; y: number } | null>(null);
 
   const squad = members.map((m) => ({ member: m, groups: computeBalance(m, props, windowKey) }));
@@ -288,22 +290,22 @@ export default function BodyBalance(props: BodyBalanceProps) {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5 text-left">
       {/* Header + filters */}
       <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
         <div>
           <h2 className="text-2xl md:text-3xl font-extrabold text-white">Body Balance</h2>
-          <p className="text-slate-400 text-sm mt-2">
-            Which muscle groups each member is under-training. Target: {BASE_WEEKLY_TARGET} session/week per group,{' '}
-            {FOCUS_WEEKLY_TARGET}/week for goal focus areas.
+          <p className="text-slate-400 text-sm mt-1">
+            Which muscles need more work. Target: {BASE_WEEKLY_TARGET} session a week per muscle,{' '}
+            {FOCUS_WEEKLY_TARGET} for goal focus muscles.
           </p>
         </div>
-        <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex gap-1 self-start">
+        <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 grid grid-cols-4 gap-1 w-full sm:w-auto sm:self-start">
           {WINDOWS.map((w) => (
             <button
               key={w.key}
               onClick={() => setWindowKey(w.key)}
-              className={`px-3 py-2 rounded-lg text-xs font-bold transition ${
+              className={`px-2 sm:px-3 py-2 rounded-lg text-xs font-bold transition whitespace-nowrap ${
                 windowKey === w.key ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:text-white'
               }`}
             >
@@ -313,12 +315,13 @@ export default function BodyBalance(props: BodyBalanceProps) {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-2">
+      {/* Member picker: one swipeable row on phones, a grid on larger screens */}
+      <div className="flex md:grid md:grid-cols-7 gap-2 overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0 pb-1 snap-x">
         {members.map((m) => (
           <button
             key={m}
             onClick={() => { setMember(m); setHover(null); }}
-            className={`p-3 rounded-xl font-bold text-sm text-center border transition ${
+            className={`shrink-0 snap-start px-4 py-2.5 rounded-xl font-bold text-sm text-center border transition whitespace-nowrap ${
               member === m
                 ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
                 : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
@@ -331,13 +334,38 @@ export default function BodyBalance(props: BodyBalanceProps) {
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* Body map */}
-        <section className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-bold text-white">{avatars[member]} {member}'s body map</h3>
-            <span className="text-xs text-slate-400">{onTrack}/{groups.length} groups on track</span>
+        <section className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h3 className="text-lg font-bold text-white truncate">{avatars[member]} {member}</h3>
+            <span className={`shrink-0 text-xs font-semibold px-2.5 py-1 rounded-full border ${statusFor(onTrack / Math.max(groups.length, 1)).chip}`}>
+              {onTrack}/{groups.length} on track
+            </span>
           </div>
 
-          <div data-figure-wrap className="relative grid grid-cols-2 gap-4" onMouseLeave={() => setHover(null)}>
+          {/* At-a-glance: what needs work, in plain words */}
+          {toHit.length > 0 ? (
+            <div className="mb-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">Needs work</p>
+              <div className="flex flex-wrap gap-1.5">
+                {toHit.map((g) => {
+                  const st = statusFor(g.ratio);
+                  return (
+                    <span key={g.name} className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold ${st.chip}`}>
+                      <st.Icon className="w-3.5 h-3.5" />
+                      {g.name}
+                      <span className="opacity-80 font-normal">{g.sessions}/{g.target}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <p className="mb-3 text-sm text-emerald-300 flex items-center gap-2">
+              <CheckCircle className="w-4 h-4" /> Every muscle group is on target.
+            </p>
+          )}
+
+          <div data-figure-wrap className="relative grid grid-cols-2 gap-2 sm:gap-4" onMouseLeave={() => setHover(null)}>
             <BodyFigure title="Front" side="front" byGroup={byGroup} active={hover?.group ?? null} onHover={handleHover} />
             <BodyFigure title="Back" side="back" byGroup={byGroup} active={hover?.group ?? null} onHover={handleHover} />
 
@@ -356,67 +384,67 @@ export default function BodyBalance(props: BodyBalanceProps) {
 
           {/* Cardio isn't a body region, so it gets its own meter. */}
           {cardio && (
-            <div className="mt-5 flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3">
-              <Heart className="w-5 h-5 text-slate-300 shrink-0" />
-              <span className="text-sm font-semibold text-white w-16">Cardio</span>
+            <div className="mt-4 flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950 p-3">
+              <Heart className="w-5 h-5 shrink-0" style={{ color: fillFor(cardio.ratio) }} />
+              <span className="text-sm font-semibold text-white w-14">Cardio</span>
               <div className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden">
                 <div className="h-full rounded-full" style={{ width: `${Math.min(100, cardio.ratio * 100)}%`, background: fillFor(cardio.ratio) }} />
               </div>
-              <span className="text-xs text-slate-300 w-20 text-right">{cardio.sessions}/{cardio.target} sessions</span>
+              <span className="text-xs text-slate-300 text-right whitespace-nowrap">{cardio.sessions}/{cardio.target}</span>
             </div>
           )}
 
           {/* Legend */}
-          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-slate-400">
-            <span className="font-semibold text-slate-500">Sessions vs target:</span>
-            {SCALE.map((s) => (
-              <span key={s.label} className="flex items-center gap-1.5">
-                <span className="inline-block w-3 h-3 rounded" style={{ background: s.fill, border: '1px solid #334155' }} />
-                {s.label}
+          <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-x-4 gap-y-2 text-xs text-slate-300">
+            {STATUSES.map((st) => (
+              <span key={st.key} className="flex items-center gap-2">
+                <span className="inline-block w-3.5 h-3.5 rounded" style={{ background: st.fill }} />
+                {st.label}
               </span>
             ))}
-            <span className="flex items-center gap-1.5">
-              <span
-                className="inline-block w-3 h-3 rounded"
-                style={{ background: 'repeating-linear-gradient(45deg, #fbbf24 0 2px, #1e293b 2px 5px)' }}
-              />
-              Lacking (&lt; 50%)
-            </span>
           </div>
         </section>
 
-        {/* Hit these next */}
-        <section className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6">
-          <h3 className="text-lg font-bold text-white mb-1 flex items-center gap-2">
-            <Target className="w-5 h-5 text-emerald-400" /> Hit these next
+        {/* Train next */}
+        <section className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
+          <h3 className="text-lg font-bold text-white flex items-center gap-2">
+            <Target className="w-5 h-5 text-emerald-400" /> Train next
           </h3>
-          <p className="text-xs text-slate-500 mb-4">Ranked by shortfall, goal focus and time since last trained.</p>
+          <p className="text-xs text-slate-500 mt-0.5 mb-3">Most behind first. Goal focus muscles get priority.</p>
 
           {toHit.length === 0 ? (
             <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-300 flex items-center gap-2">
               <CheckCircle className="w-4 h-4" /> Every muscle group is on target for this period.
             </div>
           ) : (
-            <ol className="space-y-3">
+            <ol className="divide-y divide-slate-800 rounded-xl border border-slate-800 bg-slate-950">
               {toHit.map((g, i) => {
-                const status = statusFor(g.ratio);
+                const st = statusFor(g.ratio);
                 return (
-                  <li key={g.name} className="rounded-xl border border-slate-800 bg-slate-950 p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-white text-sm">
-                        <span className="text-slate-500 mr-2">#{i + 1}</span>{g.name}
-                        {g.isFocus && <span className="ml-2 text-[10px] font-bold uppercase text-cyan-300">Goal focus</span>}
-                      </span>
-                      <span className={`inline-flex items-center gap-1 text-[10px] uppercase font-bold px-2 py-1 rounded-full ${status.className}`}>
-                        <status.Icon className="w-3 h-3" /> {status.label}
-                      </span>
+                  <li key={g.name} className="px-3 py-2.5">
+                    <div className="flex items-center gap-3">
+                      <span className="w-5 text-sm font-bold text-slate-500">{i + 1}</span>
+                      <st.Icon className="w-4 h-4 shrink-0" style={{ color: st.fill }} aria-hidden="true" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-white text-sm">{g.name}</span>
+                          {g.isFocus && (
+                            <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300">Goal</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          {st.label} · {g.daysSince === null ? 'nothing logged yet' : `last ${formatDaysSince(g.daysSince).toLowerCase()}`}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-sm font-bold text-white">
+                          {g.sessions}<span className="text-slate-500 font-normal">/{g.target}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-500">sessions</div>
+                      </div>
                     </div>
-                    <div className="mt-2 h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${Math.min(100, g.ratio * 100)}%`, background: fillFor(g.ratio) }} />
-                    </div>
-                    <div className="mt-1.5 flex justify-between text-[11px] text-slate-400">
-                      <span>{g.sessions}/{g.target} sessions</span>
-                      <span>Last: {formatDaysSince(g.daysSince)}</span>
+                    <div className="mt-2 ml-8 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                      <div className="h-full rounded-full" style={{ width: `${Math.max(4, Math.min(100, g.ratio * 100))}%`, background: st.fill }} />
                     </div>
                   </li>
                 );
@@ -427,44 +455,54 @@ export default function BodyBalance(props: BodyBalanceProps) {
       </div>
 
       {/* Squad grid */}
-      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-        <h3 className="text-lg font-bold text-white mb-1">Squad balance grid</h3>
-        <p className="text-xs text-slate-500 mb-4">Sessions in this period vs target. Click a row to open that member.</p>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] border-separate" style={{ borderSpacing: 2 }}>
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
+        <h3 className="text-lg font-bold text-white">Squad overview</h3>
+        <p className="text-xs text-slate-500 mt-0.5 mb-3">
+          Sessions vs target per muscle. Tap a name to open their body map.
+          <span className="sm:hidden"> Swipe sideways to see all muscles →</span>
+        </p>
+        <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+          <table className="w-full min-w-[560px] border-separate text-xs" style={{ borderSpacing: 3 }}>
             <thead>
               <tr>
-                <th className="text-left text-xs font-semibold text-slate-400 p-2">Member</th>
+                <th className="sticky left-0 z-10 bg-slate-900 text-left font-semibold text-slate-400 py-1.5 pr-2">Member</th>
                 {muscleGroups.map((g) => (
-                  <th key={g.id} className="text-xs font-semibold text-slate-400 p-2">{g.name}</th>
+                  <th key={g.id} className="font-semibold text-slate-400 py-1.5 text-center">{g.name}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {squad.map((row) => (
-                <tr
-                  key={row.member}
-                  onClick={() => { setMember(row.member); setHover(null); }}
-                  className={`cursor-pointer ${row.member === member ? 'outline outline-1 outline-emerald-500 rounded' : ''}`}
-                >
-                  <td className="text-sm font-semibold text-white p-2 whitespace-nowrap">{avatars[row.member]} {row.member}</td>
-                  {row.groups.map((g) => (
+              {squad.map((row) => {
+                const selected = row.member === member;
+                return (
+                  <tr key={row.member} onClick={() => { setMember(row.member); setHover(null); }} className="cursor-pointer">
                     <td
-                      key={g.name}
-                      title={`${row.member} · ${g.name}: ${g.sessions}/${g.target} sessions${g.isFocus ? ' (goal focus)' : ''}`}
-                      className="text-center text-xs font-bold rounded-md p-2 hover:ring-2 hover:ring-slate-400"
-                      style={{ background: fillFor(g.ratio), color: g.ratio >= 1 ? '#022c22' : '#e2e8f0' }}
+                      className={`sticky left-0 z-10 bg-slate-900 font-semibold whitespace-nowrap py-2 pr-2 ${
+                        selected ? 'text-emerald-300' : 'text-white'
+                      }`}
                     >
-                      {g.sessions}/{g.target}
-                      {g.isFocus && <span className="ml-0.5">★</span>}
+                      {avatars[row.member]} {row.member}
                     </td>
-                  ))}
-                </tr>
-              ))}
+                    {row.groups.map((g) => {
+                      const st = statusFor(g.ratio);
+                      return (
+                        <td
+                          key={g.name}
+                          title={`${row.member} · ${g.name}: ${g.sessions}/${g.target} sessions (${st.label})${g.isFocus ? ' · goal focus' : ''}`}
+                          className={`text-center font-bold rounded-md py-2 min-w-[3.25rem] ${st.cell} ${selected ? 'ring-1 ring-emerald-500/60' : ''}`}
+                        >
+                          {g.sessions}/{g.target}
+                          {g.isFocus && <span className="ml-0.5">★</span>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-        <p className="text-[11px] text-slate-500 mt-2">★ = goal focus area (double target)</p>
+        <p className="text-[11px] text-slate-500 mt-2">★ = goal focus muscle (double target)</p>
       </section>
     </div>
   );

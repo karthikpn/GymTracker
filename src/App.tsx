@@ -18,15 +18,16 @@ import {
   Sparkles,
   Trash2,
   PersonStanding,
+  Pencil,
 } from 'lucide-react';
 import BodyBalance from './BodyBalance';
 import ExerciseLogger from './ExerciseLogger';
 import ProgressView from './ProgressView';
 import StrengthSummary from './StrengthSummary';
-import { buildExercisePayload, summarizeSession, type DraftExercise, type SetRecord } from './exercises';
+import { buildExercisePayload, newDraftExercise, summarizeSession, type DraftExercise, type SetRecord } from './exercises';
 
 const WEB_APP_URL =
-  'https://script.google.com/macros/s/AKfycbxLmzZB2Wg95Lew6te5uXGwjNtyWuef3xjHPkqYBigvHo9mO5RU1zVQubGiT78mbMFejw/exec';
+  'https://script.google.com/macros/s/AKfycbxrSspf1fb8W3T05GCWX2qhNZFj7Gt3z-UvpF5n_LRTViDXd4yKkpSPXHOM_MPiv-6Izw/exec';
 
 const TIME_ZONE = 'Asia/Kolkata';
 
@@ -396,6 +397,7 @@ export default function App(): React.ReactElement {
   const [setsLoading, setSetsLoading] = useState(true);
 
   const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('Workout submitted successfully!');
   const [errorMessage, setErrorMessage] = useState('');
 
   // Fetch Google Sheets data.
@@ -851,6 +853,7 @@ export default function App(): React.ReactElement {
       setFormExercises([]);
       setFormDate(getTodayDate());
 
+      setToastMessage('Workout submitted successfully!');
       setShowToast(true);
       window.setTimeout(() => setShowToast(false), 3000);
 
@@ -873,6 +876,119 @@ export default function App(): React.ReactElement {
     setFormMuscles((prev) =>
       prev.includes(name) ? prev.filter((m) => m !== name) : [...prev, name]
     );
+  };
+
+  // ---- Edit workout ----
+  const [editingLog, setEditingLog] = useState<LogEntry | null>(null);
+  const [editDate, setEditDate] = useState('');
+  const [editMuscles, setEditMuscles] = useState<string[]>([]);
+  const [editExercises, setEditExercises] = useState<DraftExercise[]>([]);
+  const [editNotes, setEditNotes] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState('');
+
+  const openEditWorkout = (log: LogEntry) => {
+    if (!log.requestId) {
+      alert('This workout has no Request ID and cannot be safely edited.');
+      return;
+    }
+    const exercises = Array.from(setsByWorkout.get(log.requestId)?.entries() || []).map(([name, sets]) => {
+      const draft = newDraftExercise(name, sets[0]?.muscle || '');
+      draft.sets = [...sets]
+        .sort((a, b) => a.setNumber - b.setNumber)
+        .map((set) => ({ reps: String(set.reps), weight: String(set.weight) }));
+      return draft;
+    });
+
+    setEditingLog(log);
+    setEditDate(normalizeDate(log.timestamp));
+    setEditMuscles(Array.from(new Set(log.muscles.map(normalizeMuscleGroup))));
+    setEditExercises(exercises);
+    setEditNotes(log.notes || '');
+    setEditError('');
+  };
+
+  const closeEditWorkout = () => {
+    if (savingEdit) return;
+    setEditingLog(null);
+  };
+
+  // Save the edit, then poll the sheet until it shows the new values.
+  const handleSaveEdit = async () => {
+    if (!editingLog?.requestId || savingEdit) return;
+    const requestId = editingLog.requestId;
+
+    if (!editDate) return setEditError('Please select the workout date.');
+    if (editDate > getTodayDate()) return setEditError('Workout date cannot be in the future.');
+
+    const exercisePayload = buildExercisePayload(editExercises);
+    if (exercisePayload.error !== undefined) return setEditError(exercisePayload.error);
+    const exercises = exercisePayload.exercises;
+
+    const muscles = Array.from(new Set([...editMuscles, ...exercises.map((ex) => ex.muscle)]));
+    if (muscles.length === 0) return setEditError('Select at least one muscle group or add an exercise.');
+
+    const notes = editNotes.trim();
+    const expectedSets = exercises
+      .flatMap((ex) => ex.sets.map((set, i) => `${ex.name.trim()}|${i + 1}|${set.reps}|${set.weight}`))
+      .sort()
+      .join(';');
+
+    setSavingEdit(true);
+    setEditError('');
+
+    try {
+      await fetch(WEB_APP_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'updateWorkout', requestId, date: editDate, notes, muscles, exercises }),
+      });
+
+      let confirmed = false;
+      for (let attempt = 0; attempt < 12 && !confirmed; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+        const separator = WEB_APP_URL.includes('?') ? '&' : '?';
+        const response = await fetch(
+          `${WEB_APP_URL}${separator}action=workout&requestId=${encodeURIComponent(requestId)}&t=${Date.now()}`,
+          { cache: 'no-store' }
+        );
+        if (!response.ok) continue;
+        const data = await response.json();
+        if (!data || data.error) {
+          // An older Apps Script without the "workout" action.
+          throw new Error('Editing needs the latest Apps Script. Paste the new Code.gs and deploy a new version.');
+        }
+        if (!data.workout) continue;
+
+        const savedSets = (Array.isArray(data.sets) ? data.sets : [])
+          .map((set: any) => `${String(set.exercise).trim()}|${Number(set.setNumber)}|${Number(set.reps)}|${Number(set.weight)}`)
+          .sort()
+          .join(';');
+        const savedMuscles = new Set<string>((data.workout.muscles || []).map((m: string) => String(m).trim()));
+
+        confirmed =
+          normalizeDate(String(data.workout.timestamp)) === editDate &&
+          String(data.workout.notes || '').trim() === notes &&
+          muscles.every((m) => savedMuscles.has(m)) &&
+          savedSets === expectedSets;
+      }
+
+      if (!confirmed) {
+        throw new Error('The edit was sent, but Google Sheets has not confirmed it yet. Refresh and check before editing again.');
+      }
+
+      await Promise.all([fetchLogs(), fetchSets()]);
+      setEditingLog(null);
+      setToastMessage('Workout updated.');
+      setShowToast(true);
+      window.setTimeout(() => setShowToast(false), 3000);
+    } catch (error) {
+      console.error('Workout edit failed:', error);
+      setEditError(error instanceof Error ? error.message : 'Unable to save the edit.');
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   // Delete a workout by its stable Request ID, then verify that it is gone.
@@ -1168,9 +1284,12 @@ export default function App(): React.ReactElement {
       <main className="max-w-6xl mx-auto px-4 mt-6">
         {/* Toast */}
         {showToast && (
-          <div className="mb-4 p-4 bg-emerald-500/20 border border-emerald-500/50 text-emerald-300 rounded-xl flex items-center gap-3">
-            <CheckCircle2 className="w-5 h-5" />
-            Workout submitted successfully!
+          <div
+            role="status"
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] w-[calc(100%-2rem)] max-w-md p-4 bg-emerald-950/95 border border-emerald-500/50 text-emerald-300 rounded-xl flex items-center gap-3 shadow-2xl shadow-black/50"
+          >
+            <CheckCircle2 className="w-5 h-5 shrink-0" />
+            {toastMessage}
           </div>
         )}
 
@@ -1894,7 +2013,7 @@ export default function App(): React.ReactElement {
             <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
               <div>
                 <h2 className="text-xl font-bold text-white">Manage Workouts</h2>
-                <p className="text-sm text-slate-400 mt-1">Review and delete any squad member's workout entry.</p>
+                <p className="text-sm text-slate-400 mt-1">Review, edit or delete any squad member's workout entry.</p>
               </div>
               <span className="text-xs text-slate-500">{logs.length} total entries</span>
             </div>
@@ -1924,17 +2043,28 @@ export default function App(): React.ReactElement {
                         </ul>
                       )}
                       {log.notes && <p className="text-sm text-slate-400 mt-1 break-words">{log.notes}</p>}
-                      {!log.requestId && <p className="text-xs text-amber-400 mt-1">Missing Request ID — cannot safely delete this entry.</p>}
+                      {!log.requestId && <p className="text-xs text-amber-400 mt-1">Missing Request ID — cannot safely edit or delete this entry.</p>}
                     </div>
-                    <button
-                      onClick={() => handleDeleteWorkout(log)}
-                      disabled={!log.requestId || deletingRequestId !== null}
-                      className="shrink-0 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
-                      title="Delete workout"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      {deletingRequestId === log.requestId ? 'Deleting...' : 'Delete'}
-                    </button>
+                    <div className="shrink-0 flex gap-2">
+                      <button
+                        onClick={() => openEditWorkout(log)}
+                        disabled={!log.requestId || deletingRequestId !== null || savingEdit}
+                        className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-slate-700 text-slate-200 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="Edit workout"
+                      >
+                        <Pencil className="w-4 h-4" />
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteWorkout(log)}
+                        disabled={!log.requestId || deletingRequestId !== null || savingEdit}
+                        className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-red-500/30 text-red-300 hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="Delete workout"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        {deletingRequestId === log.requestId ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2074,6 +2204,137 @@ export default function App(): React.ReactElement {
           </div>
         )}
       </main>
+
+      {/* EDIT WORKOUT MODAL */}
+      {editingLog && (
+        <div
+          className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center sm:p-4"
+          onClick={closeEditWorkout}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-workout-title"
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 border border-slate-800 rounded-t-2xl sm:rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl text-left"
+          >
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-800">
+              <div>
+                <h2 id="edit-workout-title" className="text-lg font-bold text-white flex items-center gap-2">
+                  <Pencil className="w-5 h-5 text-emerald-400" /> Edit workout
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {MEMBER_AVATARS[editingLog.member] || '🏋️'} {editingLog.member} · originally {formatDisplayDate(normalizeDate(editingLog.timestamp))}
+                </p>
+              </div>
+              <button
+                onClick={closeEditWorkout}
+                disabled={savingEdit}
+                aria-label="Close"
+                className="text-slate-400 hover:text-white bg-slate-800/50 p-2 rounded-lg disabled:opacity-40"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto px-5 py-4 space-y-5">
+              <div>
+                <label htmlFor="edit-date" className="block text-sm font-semibold text-slate-300 mb-2">Workout Date</label>
+                <input
+                  id="edit-date"
+                  type="date"
+                  value={editDate}
+                  max={getTodayDate()}
+                  onChange={(e) => setEditDate(e.target.value)}
+                  disabled={savingEdit}
+                  className="w-full sm:w-64 bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500 [color-scheme:dark]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-300 mb-2">Muscle Groups ({editMuscles.length}/8)</label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {MUSCLE_GROUPS.map((mg) => {
+                    const selected = editMuscles.includes(mg.name);
+                    return (
+                      <button
+                        key={mg.id}
+                        type="button"
+                        disabled={savingEdit}
+                        onClick={() =>
+                          setEditMuscles((prev) => (prev.includes(mg.name) ? prev.filter((m) => m !== mg.name) : [...prev, mg.name]))
+                        }
+                        className={`p-2.5 rounded-xl text-left text-sm font-medium border flex justify-between items-center transition ${
+                          selected
+                            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <span>{mg.name}</span>
+                        {selected && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-300 mb-2">Exercises, Sets &amp; Weight</label>
+                <ExerciseLogger
+                  value={editExercises}
+                  onChange={(next) => {
+                    setEditExercises(next);
+                    const added = next.map((ex) => ex.muscle).filter(Boolean);
+                    setEditMuscles((prev) => Array.from(new Set([...prev, ...added])));
+                  }}
+                  member={editingLog.member}
+                  history={setRecords.filter((set) => set.requestId !== editingLog.requestId)}
+                  muscleGroups={MUSCLE_GROUPS.filter((mg) => mg.name !== 'Cardio').map((mg) => mg.name)}
+                  disabled={savingEdit}
+                />
+              </div>
+
+              <div>
+                <label htmlFor="edit-notes" className="block text-sm font-semibold text-slate-300 mb-2">Notes</label>
+                <textarea
+                  id="edit-notes"
+                  rows={3}
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  disabled={savingEdit}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              {editError && (
+                <div className="p-3 rounded-xl text-sm border bg-red-500/10 border-red-500/30 text-red-300 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  {editError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 px-5 py-4 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={closeEditWorkout}
+                disabled={savingEdit}
+                className="flex-1 sm:flex-none px-5 py-3 rounded-xl bg-slate-800 text-slate-300 font-semibold hover:bg-slate-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEdit}
+                disabled={savingEdit}
+                className="flex-1 px-5 py-3 rounded-xl bg-emerald-500 text-slate-950 font-bold hover:bg-emerald-400 disabled:opacity-50"
+              >
+                {savingEdit ? 'Saving to Google Sheets...' : 'Save changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MEMBER DETAIL MODAL */}
       {selectedMemberModal && (
