@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import MemberPicker from './MemberPicker';
 import { ArrowDownRight, ArrowUpRight, ChevronDown, Dumbbell, Minus, TrendingUp, Trophy } from 'lucide-react';
 import {
   estimateOneRepMax,
@@ -449,22 +450,12 @@ export default function ProgressView({ sets, members, avatars, today, loading }:
         <p className="text-slate-400 text-sm mt-1">Are you getting stronger? Records and trends from your logged sets.</p>
       </div>
 
-      {/* Member picker: one swipeable row on phones */}
-      <div className="flex md:grid md:grid-cols-7 gap-2 overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0 pb-1 snap-x">
-        {members.map((m) => (
-          <button
-            key={m}
-            onClick={() => { setMember(m); setSelectedKey(null); setOpenGroups(null); }}
-            className={`shrink-0 snap-start px-4 py-2.5 rounded-xl font-bold text-sm text-center border transition whitespace-nowrap ${
-              member === m
-                ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
-            }`}
-          >
-            {avatars[m]} {m}
-          </button>
-        ))}
-      </div>
+      <MemberPicker
+        members={members}
+        avatars={avatars}
+        value={member}
+        onChange={(m) => { setMember(m); setSelectedKey(null); setOpenGroups(null); }}
+      />
 
       {loading && sets.length === 0 ? (
         <p className="text-center text-slate-400 py-8">Loading sets...</p>
@@ -501,7 +492,7 @@ export default function ProgressView({ sets, members, avatars, today, loading }:
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 lg:gap-6">
             {/* Chart */}
-            <section ref={chartRef} className="lg:col-span-3 lg:order-2 bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6 min-w-0 scroll-mt-20">
+            <section ref={chartRef} className="lg:col-span-3 lg:order-2 bg-slate-900 border border-emerald-500/30 shadow-xl shadow-emerald-950/30 rounded-2xl p-4 sm:p-6 min-w-0 scroll-mt-20">
               <div className="flex items-center justify-between gap-3 mb-3">
                 <div className="min-w-0">
                   <h3 className="text-lg font-bold text-white truncate">{selected.name}</h3>
@@ -598,7 +589,7 @@ export default function ProgressView({ sets, members, avatars, today, loading }:
       )}
 
       {/* Squad PR feed */}
-      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
+      <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-6">
         <h3 className="text-lg font-bold text-white flex items-center gap-2">
           <Trophy className="w-5 h-5 text-amber-400" /> Squad PRs
         </h3>

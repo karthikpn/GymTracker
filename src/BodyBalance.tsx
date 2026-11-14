@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import MemberPicker from './MemberPicker';
 import type React from 'react';
 import { BODY_BACK, BODY_FRONT, OUTLINE_BACK, OUTLINE_FRONT } from './anatomyData';
 import { Activity, AlertTriangle, CheckCircle, Heart, Target, XCircle } from 'lucide-react';
@@ -18,7 +19,7 @@ export interface BalanceGoal {
   focusAreas: string;
 }
 
-interface BodyBalanceProps {
+export interface BodyBalanceProps {
   logs: BalanceLog[];
   goals: BalanceGoal[];
   members: string[];
@@ -29,7 +30,7 @@ interface BodyBalanceProps {
   today: string;
 }
 
-type WindowKey = 'week' | '2w' | '4w' | 'all';
+export type WindowKey = 'week' | '2w' | '4w' | 'all';
 
 // 'week' = the current Monday–Sunday week (same as the Leaderboard).
 const WINDOWS: { key: WindowKey; label: string; days: number | null }[] = [
@@ -43,7 +44,7 @@ const WINDOWS: { key: WindowKey; label: string; days: number | null }[] = [
 const BASE_WEEKLY_TARGET = 1;
 const FOCUS_WEEKLY_TARGET = 2;
 
-interface GroupBalance {
+export interface GroupBalance {
   name: string;
   sessions: number;
   target: number;
@@ -66,7 +67,7 @@ const STATUSES = [
   { key: 'done', label: 'On track', fill: '#059669', chip: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30', cell: 'bg-emerald-500/30 text-emerald-100', Icon: CheckCircle },
 ] as const;
 
-const statusFor = (ratio: number) =>
+export const statusFor = (ratio: number) =>
   ratio <= 0 ? STATUSES[0] : ratio < 0.5 ? STATUSES[1] : ratio < 1 ? STATUSES[2] : STATUSES[3];
 
 const fillFor = (ratio: number) => statusFor(ratio).fill;
@@ -89,14 +90,14 @@ const mondayOf = (date: string) => {
   return addDays(date, -daysSinceMonday);
 };
 
-const formatDaysSince = (days: number | null) =>
+export const formatDaysSince = (days: number | null) =>
   days === null ? 'Never logged' : days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${days} days ago`;
 
 /* ------------------------------------------------------------------ */
 /* Balance calculation                                                 */
 /* ------------------------------------------------------------------ */
 
-const computeBalance = (
+export const computeBalance = (
   member: string,
   props: BodyBalanceProps,
   windowKey: WindowKey
@@ -315,26 +316,16 @@ export default function BodyBalance(props: BodyBalanceProps) {
         </div>
       </div>
 
-      {/* Member picker: one swipeable row on phones, a grid on larger screens */}
-      <div className="flex md:grid md:grid-cols-7 gap-2 overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0 pb-1 snap-x">
-        {members.map((m) => (
-          <button
-            key={m}
-            onClick={() => { setMember(m); setHover(null); }}
-            className={`shrink-0 snap-start px-4 py-2.5 rounded-xl font-bold text-sm text-center border transition whitespace-nowrap ${
-              member === m
-                ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
-            }`}
-          >
-            {avatars[m]} {m}
-          </button>
-        ))}
-      </div>
+      <MemberPicker
+        members={members}
+        avatars={avatars}
+        value={member}
+        onChange={(m) => { setMember(m); setHover(null); }}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* Body map */}
-        <section className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
+        <section className="lg:col-span-3 bg-slate-900 border border-emerald-500/30 rounded-2xl p-4 sm:p-6 shadow-xl shadow-emerald-950/30">
           <div className="flex items-center justify-between gap-3 mb-3">
             <h3 className="text-lg font-bold text-white truncate">{avatars[member]} {member}</h3>
             <span className={`shrink-0 text-xs font-semibold px-2.5 py-1 rounded-full border ${statusFor(onTrack / Math.max(groups.length, 1)).chip}`}>
@@ -406,7 +397,7 @@ export default function BodyBalance(props: BodyBalanceProps) {
         </section>
 
         {/* Train next */}
-        <section className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
+        <section className="lg:col-span-2 bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-6">
           <h3 className="text-lg font-bold text-white flex items-center gap-2">
             <Target className="w-5 h-5 text-emerald-400" /> Train next
           </h3>
@@ -455,7 +446,7 @@ export default function BodyBalance(props: BodyBalanceProps) {
       </div>
 
       {/* Squad grid */}
-      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6">
+      <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 sm:p-6">
         <h3 className="text-lg font-bold text-white">Squad overview</h3>
         <p className="text-xs text-slate-500 mt-0.5 mb-3">
           Sessions vs target per muscle. Tap a name to open their body map.
