@@ -33,7 +33,7 @@ import { clearDraft, draftHasContent, loadDraft, loadMe, saveDraft, saveMe } fro
 import { buildExercisePayload, newDraftExercise, summarizeSession, type DraftExercise, type SetRecord } from './exercises';
 
 const WEB_APP_URL =
-  'https://script.google.com/macros/s/AKfycbxLmzZB2Wg95Lew6te5uXGwjNtyWuef3xjHPkqYBigvHo9mO5RU1zVQubGiT78mbMFejw/exec';
+  'https://script.google.com/macros/s/AKfycbxrSspf1fb8W3T05GCWX2qhNZFj7Gt3z-UvpF5n_LRTViDXd4yKkpSPXHOM_MPiv-6Izw/exec';
 
 const TIME_ZONE = 'Asia/Kolkata';
 
@@ -2339,7 +2339,7 @@ export default function App(): React.ReactElement {
                   }}
                   member={formMember}
                   history={setRecords}
-                  muscleGroups={MUSCLE_GROUPS.filter((mg) => mg.name !== 'Cardio').map((mg) => mg.name)}
+                  muscleGroups={MUSCLE_GROUPS.map((mg) => mg.name)}
                   disabled={submitting}
                 />
               </div>
@@ -2499,7 +2499,7 @@ export default function App(): React.ReactElement {
                   }}
                   member={editingLog.member}
                   history={setRecords.filter((set) => set.requestId !== editingLog.requestId)}
-                  muscleGroups={MUSCLE_GROUPS.filter((mg) => mg.name !== 'Cardio').map((mg) => mg.name)}
+                  muscleGroups={MUSCLE_GROUPS.map((mg) => mg.name)}
                   disabled={savingEdit}
                 />
               </div>
